@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>搜索结果批量打开器</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>搜索结果批量打开器</h2>
+    </div>
+    
+    <div class="form-group">
+      <label for="partNumber">料号:</label>
+      <input type="text" id="partNumber" placeholder="自动提取或手动输入">
+    </div>
+    
+    <div class="form-group">
+      <label for="supplier">供应商:</label>
+      <input type="text" id="supplier" placeholder="可选填写">
+    </div>
+    
+    <div class="form-group">
+      <label>搜索选项:</label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="exactMatch">
+        <span>完全匹配</span>
+      </label>
+      
+      <label for="fileType">文件格式:</label>
+      <select id="fileType" class="select-input">
+        <option value="none">不限制</option>
+        <option value="pdf">PDF</option>
+        <option value="doc">DOC/DOCX</option>
+        <option value="xls">XLS/XLSX</option>
+        <option value="image">图片(JPG/PNG)</option>
+      </select>
+    </div>
+    
+    <div class="form-group">
+      <div class="advanced-toggle" id="advancedToggle">
+        <span class="toggle-icon">▶</span>
+        <span>高级功能</span>
+      </div>
+      
+      <div class="advanced-options" id="advancedOptions" style="display: none;">
+        <label for="siteLimit">站点限定:</label>
+        <select id="siteLimit" class="select-input">
+          <option value="none">不限制</option>
+          <option value="alibaba">阿里巴巴(1688.com)</option>
+          <option value="taobao">淘宝(taobao.com)</option>
+          <option value="jd">京东(jd.com)</option>
+          <option value="tmall">天猫(tmall.com)</option>
+        </select>
+        
+        <label for="excludeSite">排除站点:</label>
+        <select id="excludeSite" class="select-input">
+          <option value="none">无</option>
+          <option value="forums">论坛/博客</option>
+          <option value="qa">问答网站(知乎/百度知道)</option>
+        </select>
+      </div>
+    </div>
+    
+    <div class="form-group">
+      <label>打开数量:</label>
+      <div class="radio-group">
+        <label class="radio-label">
+          <input type="radio" name="count" value="5" checked>
+          <span>5个</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="count" value="10">
+          <span>10个</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="count" value="custom">
+          <span>自定义</span>
+          <input type="number" id="customCount" min="1" max="50" value="15" disabled>
+        </label>
+      </div>
+    </div>
+    
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="createGroup" checked>
+        <span>创建标签页组</span>
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="filterAds" checked>
+        <span>过滤广告链接</span>
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="openSidebar" checked>
+        <span>打开侧边栏导航</span>
+      </label>
+    </div>
+    
+    <div class="status" id="status"></div>
+    
+    <div class="button-group">
+      <button id="confirmBtn" class="btn btn-primary">确认打开</button>
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
