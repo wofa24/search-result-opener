@@ -44,6 +44,11 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
             }
         }
         
+        // 自动填表逻辑
+        (async (id) => {
+            await waitForTabLoad(id);
+            chrome.tabs.sendMessage(id, { fAction: 'smartFillAndSearch', partNumber }).catch(() => {});
+        })(tab.id);
     }
     
     // 统一保存组信息

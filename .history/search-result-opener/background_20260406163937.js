@@ -1,3 +1,4 @@
+// 监听来自popup的消息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'openLinks') {
     openLinksDirectly(request.links, request.partNumber, request.supplier, request.searchEngine, request.createGroup, request.openSidebar)
@@ -44,6 +45,11 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
             }
         }
         
+        // 自动填表逻辑
+        (async (id) => {
+            await waitForTabLoad(id);
+            chrome.tabs.sendMessage(id, { fAction: 'smartFillAndSearch', partNumber }).catch(() => {});
+        })(tab.id);
     }
     
     // 统一保存组信息
