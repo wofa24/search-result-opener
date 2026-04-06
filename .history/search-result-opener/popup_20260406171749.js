@@ -139,7 +139,7 @@ async function handleConfirm() {
       shouldClose = true;
     }
     
-    await waitForTabAndAutomate(automateTab.id, partNumber, supplier, count, createGroup, openSidebar, shouldClose, searchUrl, searchEngine);
+    await waitForTabAndAutomate(automateTab.id, partNumber, supplier, count, createGroup, openSidebar, shouldClose);
     
   } catch (error) {
     showStatus('发生错误: ' + error.message, 'error');
@@ -147,105 +147,23 @@ async function handleConfirm() {
   }
 }
 
-// 等待标签页加载完成，complete 后再额外等待 DOM 渲染
-function waitTabReady(id, timeout = 20000, extraDelay = 800) {
-  return new Promise(res => {
-    const startTime = Date.now();
-    const check = async () => {
-      if (Date.now() - startTime > timeout) return res(null);
-      try {
-        const t = await chrome.tabs.get(id);
-        if (t.status === 'complete') {
-          // 额外等待 DOM 完全渲染
-          setTimeout(() => res(t), extraDelay);
-        } else {
-          setTimeout(check, 300);
-        }
-      } catch(e) { res(null); }
-    };
-    check();
-  });
-}
-
-// 构建翻页URL（重新构建干净的URL，只保留必要参数）
-function buildPageUrl(baseUrl, engine, page) {
-  const originUrl = new URL(baseUrl);
-  if (engine === 'bing') {
-    // Bing 翻页只需要 q + first，去掉 count 等多余参数
-    const q = originUrl.searchParams.get('q') || '';
-    const newUrl = new URL('https://www.bing.com/search');
-    newUrl.searchParams.set('q', q);
-    if (page > 1) {
-      newUrl.searchParams.set('first', String((page - 1) * 10 + 1)); // 第2页=11, 第3页=21
-    }
-    return newUrl.toString();
-  } else {
-    // Google 翻页: start=0, start=10, start=20 ...
-    const q = originUrl.searchParams.get('q') || '';
-    const newUrl = new URL('https://www.google.com/search');
-    newUrl.searchParams.set('q', q);
-    newUrl.searchParams.set('num', '10');
-    if (page > 1) {
-      newUrl.searchParams.set('start', String((page - 1) * 10));
-    }
-    return newUrl.toString();
-  }
-}
-
-// 用 executeScript 直接注入提取代码（比 sendMessage 更可靠）
-async function extractFromTabDirect(tabId, engine) {
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tabId },
-      func: (eng) => {
-        const links = [];
-        let items = [];
-
-        if (eng === 'bing') {
-          items = Array.from(document.querySelectorAll('#b_results .b_algo, .b_algo'));
-        } else {
-          // Google
-          const candidates = document.querySelectorAll('#rso .g, #search .g, .g');
-          candidates.forEach(el => {
-            // 跳过嵌套的 .g 元素
-            if (el.closest('.g') === el) items.push(el);
-          });
-        }
-
-        for (const item of items) {
-          const anchor = item.querySelector('h2 a, h3 a, a[href]');
-          if (!anchor || !anchor.href) continue;
-          const url = anchor.href;
-          if (!url.startsWith('http')) continue;
-          // 过滤搜索引擎自身链接
-          if (url.includes('bing.com/search') || url.includes('bing.com/aclick') ||
-              url.includes('google.com/search') || url.includes('google.com/aclk') ||
-              url.includes('microsoft.com') || url.includes('googleadservices.com')) continue;
-
-          const titleEl = item.querySelector('h2, h3') || anchor;
-          const title = titleEl.textContent.trim();
-          if (title.length < 2) continue;
-
-          links.push({
-            url: url,
-            title: title,
-            favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}`
-          });
-        }
-        return links;
-      },
-      args: [engine]
-    });
-    return results[0].result || [];
-  } catch (e) {
-    console.error('executeScript error:', e);
-    return [];
-  }
-}
-
-// 核心功能：多页提取，每页结果直接累加（不跨页去重），用 executeScript 直接注入
-async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createGroup, openSidebar, shouldCloseOnFinish = false, searchUrl = '', engine = 'bing') {
+// 核心功能：通过 content-script 提取搜索结果（支持翻页，突破10条限制）
+async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createGroup, openSidebar, shouldCloseOnFinish = false) {
   return new Promise(async (resolve) => {
+    // 等待页面加载完成
+    const waitTabReady = (id) => new Promise(res => {
+      const startTime = Date.now();
+      const check = async () => {
+        if (Date.now() - startTime > 15000) return res(null);
+        try {
+          const t = await chrome.tabs.get(id);
+          if (t.status === 'complete') res(t);
+          else setTimeout(check, 300);
+        } catch(e) { res(null); }
+      };
+      check();
+    });
+
     const currentTab = await waitTabReady(tabId);
     if (!currentTab) {
       showStatus('搜索页面加载超时', 'error');
@@ -253,66 +171,68 @@ async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createG
       return resolve();
     }
 
-    const baseUrl = searchUrl || currentTab.url;
-    const allLinks = [];
-    let page = 1;
-    const maxPages = 5;
+    showStatus(`正在提取搜索结果（最多 ${count} 条）...`, 'info');
 
-    showStatus(`正在提取第 ${page} 页...`, 'info');
+    // 等待 content-script 就绪，最多重试10次
+    const sendExtractMessage = () => new Promise((res) => {
+      let retries = 0;
+      const tryExtract = () => {
+        chrome.tabs.sendMessage(tabId, { action: 'extractLinks', count: count, filterAds: true }, (response) => {
+          if (chrome.runtime.lastError || !response) {
+            if (retries < 10) {
+              retries++;
+              setTimeout(tryExtract, 500);
+            } else {
+              res(null);
+            }
+          } else {
+            res(response.links);
+          }
+        });
+      };
+      tryExtract();
+    });
 
-    while (allLinks.length < count && page <= maxPages) {
-      // 第2页起导航到新URL
-      if (page > 1) {
-        const pageUrl = buildPageUrl(baseUrl, engine, page);
-        await chrome.tabs.update(tabId, { url: pageUrl });
-        await new Promise(r => setTimeout(r, 600));
-        const ready = await waitTabReady(tabId, 20000);
-        if (!ready) break;
-        showStatus(`正在提取第 ${page} 页（已有 ${allLinks.length} 条）...`, 'info');
-      }
+    try {
+        const extractedLinks = await sendExtractMessage();
 
-      // 直接注入脚本提取当前页结果
-      const pageLinks = await extractFromTabDirect(tabId, engine);
+        if (extractedLinks && extractedLinks.length > 0) {
+          showStatus(`成功提取 ${extractedLinks.length} 条结果`, 'success');
+          const searchEngine = document.getElementById('searchEngine').value;
 
-      if (pageLinks.length === 0) break; // 页面没结果就停
+          chrome.runtime.sendMessage({
+            action: 'openLinks',
+            links: extractedLinks,
+            partNumber: partNumber,
+            supplier: supplier,
+            searchEngine: searchEngine,
+            createGroup: createGroup,
+            openSidebar: openSidebar
+          }, () => {
+            if (shouldCloseOnFinish) chrome.tabs.remove(tabId).catch(() => {});
+            window.close();
+            resolve();
+          });
+        } else {
+          showStatus('未能发现有效结果，请手动检查', 'error');
+          document.getElementById('confirmBtn').disabled = false;
+          resolve();
+        }
 
-      // 直接累加，不做跨页去重
-      for (const link of pageLinks) {
-        allLinks.push(link);
-        if (allLinks.length >= count) break;
-      }
-
-      page++;
-    }
-
-    if (allLinks.length > 0) {
-      showStatus(`成功提取 ${allLinks.length} 条结果`, 'success');
-      chrome.runtime.sendMessage({
-        action: 'openLinks',
-        links: allLinks.slice(0, count),
-        partNumber: partNumber,
-        supplier: supplier,
-        searchEngine: engine,
-        createGroup: createGroup,
-        openSidebar: openSidebar
-      }, () => {
-        if (shouldCloseOnFinish) chrome.tabs.remove(tabId).catch(() => {});
-        window.close();
+    } catch (e) {
+        console.error('Extraction error:', e);
+        showStatus('提取失败: ' + e.message, 'error');
+        document.getElementById('confirmBtn').disabled = false;
         resolve();
-      });
-    } else {
-      showStatus('未能发现有效结果，请手动检查', 'error');
-      document.getElementById('confirmBtn').disabled = false;
-      resolve();
     }
   });
 }
 
-// 构建 URL（Bing 不用 count 参数，翻页用 first 控制）
+// 构建 URL
 function buildSearchUrl(engine, query) {
   const q = encodeURIComponent(query);
-  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=10`;
-  return `https://www.bing.com/search?q=${q}`;
+  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=50`;
+  return `https://www.bing.com/search?q=${q}&count=50`;
 }
 
 // 构建 Search Query

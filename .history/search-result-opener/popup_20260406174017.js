@@ -147,20 +147,16 @@ async function handleConfirm() {
   }
 }
 
-// 等待标签页加载完成，complete 后再额外等待 DOM 渲染
-function waitTabReady(id, timeout = 20000, extraDelay = 800) {
+// 等待标签页加载完成
+function waitTabReady(id, timeout = 20000) {
   return new Promise(res => {
     const startTime = Date.now();
     const check = async () => {
       if (Date.now() - startTime > timeout) return res(null);
       try {
         const t = await chrome.tabs.get(id);
-        if (t.status === 'complete') {
-          // 额外等待 DOM 完全渲染
-          setTimeout(() => res(t), extraDelay);
-        } else {
-          setTimeout(check, 300);
-        }
+        if (t.status === 'complete') res(t);
+        else setTimeout(check, 300);
       } catch(e) { res(null); }
     };
     check();
@@ -308,11 +304,11 @@ async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createG
   });
 }
 
-// 构建 URL（Bing 不用 count 参数，翻页用 first 控制）
+// 构建 URL
 function buildSearchUrl(engine, query) {
   const q = encodeURIComponent(query);
-  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=10`;
-  return `https://www.bing.com/search?q=${q}`;
+  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=50`;
+  return `https://www.bing.com/search?q=${q}&count=50`;
 }
 
 // 构建 Search Query

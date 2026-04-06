@@ -147,49 +147,33 @@ async function handleConfirm() {
   }
 }
 
-// 等待标签页加载完成，complete 后再额外等待 DOM 渲染
-function waitTabReady(id, timeout = 20000, extraDelay = 800) {
+// 等待标签页加载完成
+function waitTabReady(id, timeout = 20000) {
   return new Promise(res => {
     const startTime = Date.now();
     const check = async () => {
       if (Date.now() - startTime > timeout) return res(null);
       try {
         const t = await chrome.tabs.get(id);
-        if (t.status === 'complete') {
-          // 额外等待 DOM 完全渲染
-          setTimeout(() => res(t), extraDelay);
-        } else {
-          setTimeout(check, 300);
-        }
+        if (t.status === 'complete') res(t);
+        else setTimeout(check, 300);
       } catch(e) { res(null); }
     };
     check();
   });
 }
 
-// 构建翻页URL（重新构建干净的URL，只保留必要参数）
+// 构建翻页URL（使用干净的 searchUrl，避免会话参数干扰）
 function buildPageUrl(baseUrl, engine, page) {
-  const originUrl = new URL(baseUrl);
+  const url = new URL(baseUrl);
   if (engine === 'bing') {
-    // Bing 翻页只需要 q + first，去掉 count 等多余参数
-    const q = originUrl.searchParams.get('q') || '';
-    const newUrl = new URL('https://www.bing.com/search');
-    newUrl.searchParams.set('q', q);
-    if (page > 1) {
-      newUrl.searchParams.set('first', String((page - 1) * 10 + 1)); // 第2页=11, 第3页=21
-    }
-    return newUrl.toString();
+    // Bing 翻页: first=1, first=11, first=21 ...
+    url.searchParams.set('first', page === 1 ? '1' : String((page - 1) * 10 + 1));
   } else {
     // Google 翻页: start=0, start=10, start=20 ...
-    const q = originUrl.searchParams.get('q') || '';
-    const newUrl = new URL('https://www.google.com/search');
-    newUrl.searchParams.set('q', q);
-    newUrl.searchParams.set('num', '10');
-    if (page > 1) {
-      newUrl.searchParams.set('start', String((page - 1) * 10));
-    }
-    return newUrl.toString();
+    url.searchParams.set('start', page === 1 ? '0' : String((page - 1) * 10));
   }
+  return url.toString();
 }
 
 // 用 executeScript 直接注入提取代码（比 sendMessage 更可靠）
@@ -308,11 +292,11 @@ async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createG
   });
 }
 
-// 构建 URL（Bing 不用 count 参数，翻页用 first 控制）
+// 构建 URL
 function buildSearchUrl(engine, query) {
   const q = encodeURIComponent(query);
-  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=10`;
-  return `https://www.bing.com/search?q=${q}`;
+  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=50`;
+  return `https://www.bing.com/search?q=${q}&count=50`;
 }
 
 // 构建 Search Query

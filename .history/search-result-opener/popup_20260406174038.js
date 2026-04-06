@@ -147,20 +147,16 @@ async function handleConfirm() {
   }
 }
 
-// 等待标签页加载完成，complete 后再额外等待 DOM 渲染
-function waitTabReady(id, timeout = 20000, extraDelay = 800) {
+// 等待标签页加载完成
+function waitTabReady(id, timeout = 20000) {
   return new Promise(res => {
     const startTime = Date.now();
     const check = async () => {
       if (Date.now() - startTime > timeout) return res(null);
       try {
         const t = await chrome.tabs.get(id);
-        if (t.status === 'complete') {
-          // 额外等待 DOM 完全渲染
-          setTimeout(() => res(t), extraDelay);
-        } else {
-          setTimeout(check, 300);
-        }
+        if (t.status === 'complete') res(t);
+        else setTimeout(check, 300);
       } catch(e) { res(null); }
     };
     check();
