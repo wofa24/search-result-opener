@@ -54,11 +54,21 @@
       </div>
       
       <div class="advanced-options" id="advancedOptions" style="display: none;">
-        <label for="siteLimit">限定站点 (如 1688.com, jd.com):</label>
-        <input type="text" id="siteLimit" class="select-input" placeholder="多个以逗号分隔">
+        <label for="siteLimit">站点限定:</label>
+        <select id="siteLimit" class="select-input">
+          <option value="none">不限制</option>
+          <option value="alibaba">阿里巴巴(1688.com)</option>
+          <option value="taobao">淘宝(taobao.com)</option>
+          <option value="jd">京东(jd.com)</option>
+          <option value="tmall">天猫(tmall.com)</option>
+        </select>
         
-        <label for="excludeSite">排除站点 (如 zhihu.com, csdn.net):</label>
-        <input type="text" id="excludeSite" class="select-input" placeholder="多个以逗号分隔">
+        <label for="excludeSite">排除站点:</label>
+        <select id="excludeSite" class="select-input">
+          <option value="none">无</option>
+          <option value="forums">论坛/博客</option>
+          <option value="qa">问答网站(知乎/百度知道)</option>
+        </select>
       </div>
     </div>
     
@@ -87,20 +97,17 @@
         <span>创建标签页组</span>
       </label>
       <label class="checkbox-label">
+        <input type="checkbox" id="filterAds" checked>
+        <span>过滤广告链接</span>
+      </label>
+      <label class="checkbox-label">
         <input type="checkbox" id="openSidebar" checked>
         <span>打开侧边栏导航</span>
       </label>
       <label class="checkbox-label">
-        <input type="checkbox" id="showThumbnails" checked>
+        <input type="checkbox" id="showThumbnails">
         <span>显示页面缩略图</span>
       </label>
-    </div>
-
-    <div class="history-container" id="historyContainer">
-      <div class="history-header">最近搜索</div>
-      <div id="historyList" class="history-list">
-        <!-- 历史记录将通过 JS 动态添加 -->
-      </div>
     </div>
     
     <div class="status" id="status"></div>

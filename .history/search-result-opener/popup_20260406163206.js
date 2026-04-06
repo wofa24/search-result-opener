@@ -124,7 +124,7 @@ async function handleConfirm() {
     const searchEngine = document.getElementById('searchEngine').value;
     const searchUrl = buildSearchUrl(searchEngine, searchQuery);
 
-    showStatus('正在发起搜索...', 'info');
+    showStatus('正在发起自动化搜索...', 'info');
     
     // 获取当前活动标签页
     const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -147,113 +147,141 @@ async function handleConfirm() {
   }
 }
 
-// 核心功能：重归原生的单页提取逻辑（删除多页翻页与跨页跳转）
+// 核心功能：极致抓取逻辑
 async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createGroup, openSidebar, shouldCloseOnFinish = false) {
   return new Promise(async (resolve) => {
-    // 等待页面加载完成
-    const waitTabReady = (id) => new Promise(res => {
-      const startTime = Date.now();
-      const check = async () => {
-        if (Date.now() - startTime > 15000) return res(null);
-        try {
-          const t = await chrome.tabs.get(id);
-          if (t.status === 'complete') res(t);
-          else setTimeout(check, 300);
-        } catch(e) { res(null); }
-      };
-      check();
-    });
+    let extractedLinks = [];
+    let attempts = 0;
+    const MAX_PAGE_ATTEMPTS = 4; // 增加最大尝试页数
 
-    const currentTab = await waitTabReady(tabId);
-    if (!currentTab) {
-      showStatus('搜索页面加载超时', 'error');
-      document.getElementById('confirmBtn').disabled = false;
-      return resolve();
-    }
-
-    showStatus(`正在提取搜索结果...`, 'info');
-    
-    try {
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: tabId },
-          func: async (limit) => {
-            const pageLinks = [];
-            const seen = new Set();
-            
-            // 仿真滚动以加载单页内所有结果
-            window.scrollTo(0, document.body.scrollHeight / 2);
-            await new Promise(r => setTimeout(r, 400));
-            window.scrollTo(0, document.body.scrollHeight);
-            await new Promise(r => setTimeout(r, 400));
-
-            const isSearchRelated = (url) => {
-              const blacklist = ['google.com/search', 'bing.com/search', 'microsoft.com', 'googleadservices'];
-              return blacklist.some(b => url.toLowerCase().includes(b));
-            };
-
-            // 依据常见搜索引擎结构进行高效提取
-            const selectors = ['#b_results .b_algo', '#rso .g', '.g', '.b_algo'];
-            let items = [];
-            selectors.forEach(s => {
-              document.querySelectorAll(s).forEach(el => {
-                if (!items.includes(el)) items.push(el);
-              });
-            });
-
-            for (const item of items) {
-                const a = item.querySelector('h2 a') || item.querySelector('h3 a') || item.querySelector('a[href]');
-                if (!a || !a.href || !a.href.startsWith('http') || isSearchRelated(a.href)) continue;
-                
-                const url = a.href;
-                if (!seen.has(url)) {
-                    const titleEl = item.querySelector('h2, h3') || a;
-                    const title = titleEl.textContent.trim();
-                    if (title.length > 3) {
-                      seen.add(url);
-                      pageLinks.push({ 
-                          url, 
-                          title: title, 
-                          favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}`
-                      });
-                    }
-                }
-                if (pageLinks.length >= limit) break;
-            }
-            return pageLinks;
-          },
-          args: [count]
+    while (extractedLinks.length < count && attempts < MAX_PAGE_ATTEMPTS) {
+        const waitTabReady = (id) => new Promise(res => {
+          const startTime = Date.now();
+          const check = async () => {
+            if (Date.now() - startTime > 15000) return res(null);
+            try {
+              const t = await chrome.tabs.get(id);
+              if (t.status === 'complete') res(t);
+              else setTimeout(check, 300);
+            } catch(e) { res(null); }
+          };
+          check();
         });
 
-        const extractedLinks = results[0].result;
+        const currentTab = await waitTabReady(tabId);
+        if (!currentTab) break;
 
-        if (extractedLinks && extractedLinks.length > 0) {
-          showStatus(`成功提取 ${extractedLinks.length} 条结果`, 'success');
-          const searchEngine = document.getElementById('searchEngine').value;
+        showStatus(`正在抓取第 ${attempts + 1} 页 [已抓取: ${extractedLinks.length}/${count}]...`, 'info');
+        
+        try {
+            const results = await chrome.scripting.executeScript({
+              target: { tabId: tabId },
+              func: async (limit, alreadyFoundUrls) => {
+                const pageLinks = [];
+                const seen = new Set(alreadyFoundUrls);
+                
+                // 1. 多段式滚动，强制触发所有懒加载
+                for (let i = 0; i < 3; i++) {
+                    window.scrollTo(0, (document.body.scrollHeight / 3) * (i + 1));
+                    await new Promise(r => setTimeout(r, 400));
+                }
 
-          chrome.runtime.sendMessage({
-            action: 'openLinks',
-            links: extractedLinks,
-            partNumber: partNumber,
-            supplier: supplier,
-            searchEngine: searchEngine,
-            createGroup: createGroup,
-            openSidebar: openSidebar
-          }, () => {
-            if (shouldCloseOnFinish) chrome.tabs.remove(tabId).catch(() => {});
-            window.close();
-            resolve();
-          });
-        } else {
-          showStatus('未能发现有效结果，请手动检查', 'error');
-          document.getElementById('confirmBtn').disabled = false;
-          resolve();
+                // 2. 暴力提取：寻找符合搜索结果的所有 A 标签
+                // 排除含有搜索引擎自身特征的 URL
+                const isBlacklisted = (url) => {
+                    const black = ['google.com/search', 'bing.com/search', 'microsoft.com', 'bingvisualsearch', 'google.com/url', 'support.google', 'accounts.google'];
+                    return black.some(b => url.includes(b));
+                };
+
+                // 在通常容纳结果的容器中深入搜索
+                const containers = ['#b_results', '#rso', 'main', '.results', '#results'];
+                let root = document;
+                for (const c of containers) {
+                    const el = document.querySelector(c);
+                    if (el) { root = el; break; }
+                }
+
+                const allLinks = root.querySelectorAll('a[href^="http"]');
+                for (const a of allLinks) {
+                    const url = a.href;
+                    if (!seen.has(url) && !isBlacklisted(url)) {
+                        // 寻找最可能的标题：向上寻找 H2/H3，或使用本身文字
+                        let titleEl = a.closest('.b_algo, .g')?.querySelector('h2, h3') || a.querySelector('h2, h3') || a;
+                        let title = titleEl.textContent.split('\n')[0].trim();
+                        if (!title || title.length < 3) continue;
+
+                        seen.add(url);
+                        pageLinks.push({ 
+                            url, 
+                            title: title, 
+                            favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}`
+                        });
+                    }
+                    if ((alreadyFoundUrls.length + pageLinks.length) >= limit) break;
+                }
+
+                // 3. 翻页探测
+                let nextButtonClicked = false;
+                if ((alreadyFoundUrls.length + pageLinks.length) < limit) {
+                    const nextSelectors = [
+                        '#pnnext', '.sb_pagN', 'a[title="下一页"]', 'a[aria-label="Next page"]',
+                        'a[title="Next"]', 'a[aria-label="Next"]', '.nb_next', 'a.next'
+                    ];
+                    for (const s of nextSelectors) {
+                        const btn = document.querySelector(s);
+                        if (btn) {
+                            btn.click();
+                            nextButtonClicked = true;
+                            break;
+                        }
+                    }
+                }
+
+                return { links: pageLinks, clickedNext: nextButtonClicked };
+              },
+              args: [count, extractedLinks.map(l => l.url)]
+            });
+
+            if (results && results[0] && results[0].result) {
+                const { links, clickedNext } = results[0].result;
+                extractedLinks.push(...links);
+
+                if (extractedLinks.length >= count || !clickedNext) break;
+            } else {
+                break;
+            }
+            
+            // 等待页面跳转/加载
+            await new Promise(r => setTimeout(r, 1500));
+            attempts++;
+
+        } catch (e) {
+            console.error('Speed/Deep capture error:', e);
+            break;
         }
+    }
 
-    } catch (e) {
-        console.error('Extraction error:', e);
-        showStatus('提取失败: ' + e.message, 'error');
-        document.getElementById('confirmBtn').disabled = false;
+    if (extractedLinks.length > 0) {
+      showStatus(`成功提取 ${extractedLinks.length} 条结果`, 'success');
+      const searchEngine = document.getElementById('searchEngine').value;
+
+      chrome.runtime.sendMessage({
+        action: 'openLinks',
+        links: extractedLinks,
+        partNumber: partNumber,
+        supplier: supplier,
+        searchEngine: searchEngine,
+        createGroup: createGroup,
+        openSidebar: openSidebar
+      }, () => {
+        if (shouldCloseOnFinish) chrome.tabs.remove(tabId).catch(() => {});
+        window.close();
         resolve();
+      });
+    } else {
+      showStatus('由于搜索引擎限制，未能发现更多结果', 'error');
+      document.getElementById('confirmBtn').disabled = false;
+      resolve();
     }
   });
 }
@@ -261,7 +289,7 @@ async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createG
 // 构建 URL
 function buildSearchUrl(engine, query) {
   const q = encodeURIComponent(query);
-  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=20`;
+  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=50`;
   return `https://www.bing.com/search?q=${q}&count=50`;
 }
 

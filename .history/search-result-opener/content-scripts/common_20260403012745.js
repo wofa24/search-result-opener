@@ -6,11 +6,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const query = getSearchQuery();
     sendResponse({ query: query });
   } else if (request.action === 'extractLinks') {
-    // 处理异步提取
-    Promise.resolve(extractSearchResults(request.count, request.filterAds)).then(links => {
-      sendResponse({ links: links });
-    });
-    return true; // 保持异步通道
+    const links = extractSearchResults(request.count, request.filterAds);
+    sendResponse({ links: links });
   } else if (request.action === 'performSearch') {
     const success = performSearch(request.query);
     sendResponse({ success: success });

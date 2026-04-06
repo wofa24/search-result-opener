@@ -68,7 +68,6 @@ getSearchQuery = function() {
 extractSearchResults = async function(count) {
   const results = [];
   const seen = new Set();
-  let lastResultCount = 0;
   
   const extractFromPage = () => {
     const itemSelectors = ['#b_results .b_algo', '.b_algo'];
@@ -94,7 +93,6 @@ extractSearchResults = async function(count) {
         });
       }
     }
-    return items.length;
   };
 
   extractFromPage();
@@ -102,13 +100,9 @@ extractSearchResults = async function(count) {
   // 如果结果不够，尝试点击“下一页”或滚动加载 (针对 Bing 50个的需求)
   let attempts = 0;
   while (results.length < count && attempts < 5) {
-    lastResultCount = results.length;
     const nextBtn = document.querySelector('.sb_pagN') || document.querySelector('a[title="下一页"]');
-    
     if (nextBtn) {
-      if (nextBtn.click) nextBtn.click();
-      else if (nextBtn.href) window.location.href = nextBtn.href;
-      
+      nextBtn.click();
       await new Promise(r => setTimeout(r, 2000)); // 等待翻页加载
       extractFromPage();
       attempts++;
@@ -117,10 +111,8 @@ extractSearchResults = async function(count) {
       await new Promise(r => setTimeout(r, 1000));
       extractFromPage();
       attempts++;
+      if (items.length === lastLength) break; // 没新内容了
     }
-    
-    // 如果结果数量没增加，说明到底了
-    if (results.length === lastResultCount && attempts > 1) break; 
   }
 
   return results.slice(0, count);

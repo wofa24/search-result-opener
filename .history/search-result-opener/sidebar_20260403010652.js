@@ -24,18 +24,11 @@ function setupEventListeners() {
     navigateTab(1);
   });
   
-  // 监听标签页激活变化（切换高亮）
+  // 监听标签页变化
   chrome.tabs.onActivated.addListener(() => {
     loadTabGroup();
   });
   
-  // 监听存储变化（当新搜索发起时，currentGroup 会更新）
-  chrome.storage.onChanged.addListener((changes) => {
-    if (changes.currentGroup) {
-      loadTabGroup();
-    }
-  });
-
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === 'complete' || changeInfo.title) {
       loadTabGroup();

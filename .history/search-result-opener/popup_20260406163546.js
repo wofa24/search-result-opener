@@ -124,7 +124,7 @@ async function handleConfirm() {
     const searchEngine = document.getElementById('searchEngine').value;
     const searchUrl = buildSearchUrl(searchEngine, searchQuery);
 
-    showStatus('正在发起搜索...', 'info');
+    showStatus('正在发起自动化搜索...', 'info');
     
     // 获取当前活动标签页
     const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -147,113 +147,158 @@ async function handleConfirm() {
   }
 }
 
-// 核心功能：重归原生的单页提取逻辑（删除多页翻页与跨页跳转）
+// 核心功能：极致全能破限抓取逻辑
 async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createGroup, openSidebar, shouldCloseOnFinish = false) {
   return new Promise(async (resolve) => {
-    // 等待页面加载完成
-    const waitTabReady = (id) => new Promise(res => {
-      const startTime = Date.now();
-      const check = async () => {
-        if (Date.now() - startTime > 15000) return res(null);
-        try {
-          const t = await chrome.tabs.get(id);
-          if (t.status === 'complete') res(t);
-          else setTimeout(check, 300);
-        } catch(e) { res(null); }
-      };
-      check();
-    });
+    let extractedLinks = [];
+    let attempts = 0;
+    const MAX_PAGE_ATTEMPTS = 5; // 进一步增加深度
 
-    const currentTab = await waitTabReady(tabId);
-    if (!currentTab) {
-      showStatus('搜索页面加载超时', 'error');
-      document.getElementById('confirmBtn').disabled = false;
-      return resolve();
-    }
-
-    showStatus(`正在提取搜索结果...`, 'info');
-    
-    try {
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: tabId },
-          func: async (limit) => {
-            const pageLinks = [];
-            const seen = new Set();
-            
-            // 仿真滚动以加载单页内所有结果
-            window.scrollTo(0, document.body.scrollHeight / 2);
-            await new Promise(r => setTimeout(r, 400));
-            window.scrollTo(0, document.body.scrollHeight);
-            await new Promise(r => setTimeout(r, 400));
-
-            const isSearchRelated = (url) => {
-              const blacklist = ['google.com/search', 'bing.com/search', 'microsoft.com', 'googleadservices'];
-              return blacklist.some(b => url.toLowerCase().includes(b));
-            };
-
-            // 依据常见搜索引擎结构进行高效提取
-            const selectors = ['#b_results .b_algo', '#rso .g', '.g', '.b_algo'];
-            let items = [];
-            selectors.forEach(s => {
-              document.querySelectorAll(s).forEach(el => {
-                if (!items.includes(el)) items.push(el);
-              });
-            });
-
-            for (const item of items) {
-                const a = item.querySelector('h2 a') || item.querySelector('h3 a') || item.querySelector('a[href]');
-                if (!a || !a.href || !a.href.startsWith('http') || isSearchRelated(a.href)) continue;
-                
-                const url = a.href;
-                if (!seen.has(url)) {
-                    const titleEl = item.querySelector('h2, h3') || a;
-                    const title = titleEl.textContent.trim();
-                    if (title.length > 3) {
-                      seen.add(url);
-                      pageLinks.push({ 
-                          url, 
-                          title: title, 
-                          favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}`
-                      });
-                    }
-                }
-                if (pageLinks.length >= limit) break;
-            }
-            return pageLinks;
-          },
-          args: [count]
+    while (extractedLinks.length < count && attempts < MAX_PAGE_ATTEMPTS) {
+        const waitTabReady = (id) => new Promise(res => {
+          const startTime = Date.now();
+          const check = async () => {
+            if (Date.now() - startTime > 15000) return res(null);
+            try {
+              const t = await chrome.tabs.get(id);
+              if (t.status === 'complete') res(t);
+              else setTimeout(check, 300);
+            } catch(e) { res(null); }
+          };
+          check();
         });
 
-        const extractedLinks = results[0].result;
+        const currentTab = await waitTabReady(tabId);
+        if (!currentTab) break;
 
-        if (extractedLinks && extractedLinks.length > 0) {
-          showStatus(`成功提取 ${extractedLinks.length} 条结果`, 'success');
-          const searchEngine = document.getElementById('searchEngine').value;
+        showStatus(`破限模式检索 [${extractedLinks.length}/${count}]...`, 'info');
+        
+        try {
+            const results = await chrome.scripting.executeScript({
+              target: { tabId: tabId },
+              func: async (limit, alreadyFoundUrls) => {
+                const pageLinks = [];
+                const seen = new Set(alreadyFoundUrls);
+                
+                // 1. 三段式仿真滚动，强制刷新异步数据
+                const scrollHeights = [0.3, 0.6, 1.0];
+                for (const sh of scrollHeights) {
+                    window.scrollTo(0, document.body.scrollHeight * sh);
+                    await new Promise(r => setTimeout(r, 500));
+                }
 
-          chrome.runtime.sendMessage({
-            action: 'openLinks',
-            links: extractedLinks,
-            partNumber: partNumber,
-            supplier: supplier,
-            searchEngine: searchEngine,
-            createGroup: createGroup,
-            openSidebar: openSidebar
-          }, () => {
-            if (shouldCloseOnFinish) chrome.tabs.remove(tabId).catch(() => {});
-            window.close();
-            resolve();
-          });
-        } else {
-          showStatus('未能发现有效结果，请手动检查', 'error');
-          document.getElementById('confirmBtn').disabled = false;
-          resolve();
+                // 2. 暴力扫描：不留死角的选择器 + 计算样式可见性检查
+                const isBlacklisted = (url) => {
+                  const b = ['google.com/', 'bing.com/', 'microsoft.com/', 'googleadservices.com', 'bingvisualsearch', 'support.google', 'accounts.google'];
+                  return b.some(pattern => url.toLowerCase().includes(pattern.toLowerCase()));
+                };
+
+                const allLinks = document.querySelectorAll('a[href^="http"]');
+                for (const a of allLinks) {
+                    const url = a.href;
+                    if (!seen.has(url) && !isBlacklisted(url)) {
+                        // 寻找最像搜索标题的文本
+                        let text = "";
+                        const h = a.querySelector('h2, h3') || a.closest('.b_algo, .g')?.querySelector('h2, h3');
+                        if (h) text = h.textContent;
+                        else {
+                          // 如果没有 H 标签，使用自身可见文本中的第一行
+                          const rect = a.getBoundingClientRect();
+                          if (rect.width > 0 && rect.height > 0) { // 简单检查可见性
+                            text = a.innerText || a.textContent;
+                          }
+                        }
+                        
+                        let finalTitle = text.split('\n')[0].trim();
+                        if (finalTitle && finalTitle.length > 5) {
+                            seen.add(url);
+                            pageLinks.push({ 
+                                url, 
+                                title: finalTitle, 
+                                favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}`
+                            });
+                        }
+                    }
+                    if ((alreadyFoundUrls.length + pageLinks.length) >= limit) break;
+                }
+
+                // 3. 多保险翻页嗅探
+                let nextAction = { clicked: false, nextUrl: null };
+                
+                if ((alreadyFoundUrls.length + pageLinks.length) < limit) {
+                    // 方法 A: 点击翻页按钮
+                    const nextBtnSelectors = [
+                        '#pnnext', '.sb_pagN', 'a[title="下一页"]', 'a[aria-label="Next page"]',
+                        'a[title="Next"]', 'a[aria-label="Next"]', '.nb_next', 'a.next', 'a.pagination__next'
+                    ];
+                    for (const s of nextBtnSelectors) {
+                        const btn = document.querySelector(s);
+                        if (btn && btn.offsetHeight > 0) {
+                            btn.click();
+                            nextAction.clicked = true;
+                            break;
+                        }
+                    }
+
+                    // 方法 B: 如果 A 失败，尝试 URL 偏移计算翻页 (针对 Bing)
+                    if (!nextAction.clicked && window.location.hostname.includes('bing.com')) {
+                        const url = new URL(window.location.href);
+                        let first = parseInt(url.searchParams.get('first')) || 1;
+                        url.searchParams.set('first', first + 10);
+                        nextAction.nextUrl = url.toString();
+                    }
+                }
+
+                return { links: pageLinks, nextAction };
+              },
+              args: [count, extractedLinks.map(l => l.url)]
+            });
+
+            if (results && results[0] && results[0].result) {
+                const { links, nextAction } = results[0].result;
+                extractedLinks.push(...links);
+
+                if (extractedLinks.length >= count) break;
+
+                if (nextAction.nextUrl) {
+                  await chrome.tabs.update(tabId, { url: nextAction.nextUrl });
+                } else if (!nextAction.clicked) {
+                  break; // 既点不了也算不出下一页，则停止
+                }
+            } else {
+                break;
+            }
+            
+            await new Promise(r => setTimeout(r, 2000));
+            attempts++;
+
+        } catch (e) {
+            console.error('Speed/Deep/Stealth capture error:', e);
+            break;
         }
+    }
 
-    } catch (e) {
-        console.error('Extraction error:', e);
-        showStatus('提取失败: ' + e.message, 'error');
-        document.getElementById('confirmBtn').disabled = false;
+    if (extractedLinks.length > 0) {
+      showStatus(`成功破限提取 ${extractedLinks.length} 条结果`, 'success');
+      const searchEngine = document.getElementById('searchEngine').value;
+
+      chrome.runtime.sendMessage({
+        action: 'openLinks',
+        links: extractedLinks,
+        partNumber: partNumber,
+        supplier: supplier,
+        searchEngine: searchEngine,
+        createGroup: createGroup,
+        openSidebar: openSidebar
+      }, () => {
+        if (shouldCloseOnFinish) chrome.tabs.remove(tabId).catch(() => {});
+        window.close();
         resolve();
+      });
+    } else {
+      showStatus('破限模式尝试完毕，搜索引擎未开放更多公开结果', 'error');
+      document.getElementById('confirmBtn').disabled = false;
+      resolve();
     }
   });
 }
@@ -261,7 +306,7 @@ async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createG
 // 构建 URL
 function buildSearchUrl(engine, query) {
   const q = encodeURIComponent(query);
-  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=20`;
+  if (engine === 'google') return `https://www.google.com/search?q=${q}&num=50`;
   return `https://www.bing.com/search?q=${q}&count=50`;
 }
 

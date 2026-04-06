@@ -124,14 +124,15 @@ async function handleConfirm() {
     const searchEngine = document.getElementById('searchEngine').value;
     const searchUrl = buildSearchUrl(searchEngine, searchQuery);
 
-    showStatus('正在发起搜索...', 'info');
+    showStatus('正在发起自动化搜索...', 'info');
     
     // 获取当前活动标签页
     const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     let automateTab;
-    let shouldClose = false; 
+    let shouldClose = false; // 默认不关闭，如果复用则不关，如果是新开且抓取完毕则根据需求定
 
     if (currentTab && isSearchPage(currentTab.url)) {
+      // 智能环境复用：在搜索结果页进行的新搜索，都在原页面更新
       automateTab = await chrome.tabs.update(currentTab.id, { url: searchUrl });
       shouldClose = false; 
     } else {
@@ -147,118 +148,133 @@ async function handleConfirm() {
   }
 }
 
-// 核心功能：重归原生的单页提取逻辑（删除多页翻页与跨页跳转）
+// 核心功能：重火力抓取逻辑
 async function waitForTabAndAutomate(tabId, partNumber, supplier, count, createGroup, openSidebar, shouldCloseOnFinish = false) {
   return new Promise(async (resolve) => {
-    // 等待页面加载完成
-    const waitTabReady = (id) => new Promise(res => {
-      const startTime = Date.now();
-      const check = async () => {
-        if (Date.now() - startTime > 15000) return res(null);
-        try {
-          const t = await chrome.tabs.get(id);
-          if (t.status === 'complete') res(t);
-          else setTimeout(check, 300);
-        } catch(e) { res(null); }
-      };
-      check();
-    });
+    let extractedLinks = [];
+    let attempts = 0;
+    const MAX_PAGE_ATTEMPTS = 3; // 如果一页不够，最多翻3页
 
-    const currentTab = await waitTabReady(tabId);
-    if (!currentTab) {
-      showStatus('搜索页面加载超时', 'error');
-      document.getElementById('confirmBtn').disabled = false;
-      return resolve();
-    }
-
-    showStatus(`正在提取搜索结果...`, 'info');
-    
-    try {
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: tabId },
-          func: async (limit) => {
-            const pageLinks = [];
-            const seen = new Set();
-            
-            // 仿真滚动以加载单页内所有结果
-            window.scrollTo(0, document.body.scrollHeight / 2);
-            await new Promise(r => setTimeout(r, 400));
-            window.scrollTo(0, document.body.scrollHeight);
-            await new Promise(r => setTimeout(r, 400));
-
-            const isSearchRelated = (url) => {
-              const blacklist = ['google.com/search', 'bing.com/search', 'microsoft.com', 'googleadservices'];
-              return blacklist.some(b => url.toLowerCase().includes(b));
-            };
-
-            // 依据常见搜索引擎结构进行高效提取
-            const selectors = ['#b_results .b_algo', '#rso .g', '.g', '.b_algo'];
-            let items = [];
-            selectors.forEach(s => {
-              document.querySelectorAll(s).forEach(el => {
-                if (!items.includes(el)) items.push(el);
-              });
-            });
-
-            for (const item of items) {
-                const a = item.querySelector('h2 a') || item.querySelector('h3 a') || item.querySelector('a[href]');
-                if (!a || !a.href || !a.href.startsWith('http') || isSearchRelated(a.href)) continue;
-                
-                const url = a.href;
-                if (!seen.has(url)) {
-                    const titleEl = item.querySelector('h2, h3') || a;
-                    const title = titleEl.textContent.trim();
-                    if (title.length > 3) {
-                      seen.add(url);
-                      pageLinks.push({ 
-                          url, 
-                          title: title, 
-                          favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}`
-                      });
-                    }
-                }
-                if (pageLinks.length >= limit) break;
-            }
-            return pageLinks;
-          },
-          args: [count]
+    while (extractedLinks.length < count && attempts < MAX_PAGE_ATTEMPTS) {
+        // 快速等待页面加载
+        const waitTabReady = (id) => new Promise(res => {
+          const startTime = Date.now();
+          const check = async () => {
+            if (Date.now() - startTime > 15000) return res(null);
+            try {
+              const t = await chrome.tabs.get(id);
+              if (t.status === 'complete') res(t);
+              else setTimeout(check, 200);
+            } catch(e) { res(null); }
+          };
+          check();
         });
 
-        const extractedLinks = results[0].result;
+        const currentTab = await waitTabReady(tabId);
+        if (!currentTab) break;
 
-        if (extractedLinks && extractedLinks.length > 0) {
-          showStatus(`成功提取 ${extractedLinks.length} 条结果`, 'success');
-          const searchEngine = document.getElementById('searchEngine').value;
+        showStatus(`正在深度捕获 [已获取: ${extractedLinks.length}/${count}]...`, 'info');
+        
+        try {
+            const results = await chrome.scripting.executeScript({
+              target: { tabId: tabId },
+              func: async (limit, alreadyFoundUrls) => {
+                const pageLinks = [];
+                const seen = new Set(alreadyFoundUrls);
+                
+                // 1. 主动滚动触发渲染
+                window.scrollTo(0, document.body.scrollHeight / 2);
+                await new Promise(r => setTimeout(r, 300));
+                window.scrollTo(0, document.body.scrollHeight);
+                await new Promise(r => setTimeout(r, 300));
 
-          chrome.runtime.sendMessage({
-            action: 'openLinks',
-            links: extractedLinks,
-            partNumber: partNumber,
-            supplier: supplier,
-            searchEngine: searchEngine,
-            createGroup: createGroup,
-            openSidebar: openSidebar
-          }, () => {
-            if (shouldCloseOnFinish) chrome.tabs.remove(tabId).catch(() => {});
-            window.close();
-            resolve();
-          });
-        } else {
-          showStatus('未能发现有效结果，请手动检查', 'error');
-          document.getElementById('confirmBtn').disabled = false;
-          resolve();
+                const selectors = [
+                    '#b_results .b_algo', 
+                    '#rso .g', 
+                    '.g', 
+                    'li.b_algo',
+                    'div[data-hveid] a[href^="http"]:not([href*="google.com"]):not([role="button"])'
+                ];
+                
+                const items = [];
+                selectors.forEach(s => {
+                    document.querySelectorAll(s).forEach(el => items.push(el));
+                });
+
+                for (const item of items) {
+                    const a = item.tagName === 'A' ? item : (item.querySelector('h2 a') || item.querySelector('a[href]'));
+                    if (!a || !a.href || !a.href.startsWith('http')) continue;
+                    
+                    const url = a.href;
+                    if (!seen.has(url)) {
+                        if (url.includes('google.com/search') || url.includes('bing.com/search')) continue;
+                        
+                        seen.add(url);
+                        pageLinks.push({ 
+                            url, 
+                            title: (item.querySelector('h2') || item.querySelector('h3') || a).textContent.split('\n')[0].trim(), 
+                            favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}`
+                        });
+                    }
+                    if ((alreadyFoundUrls.length + pageLinks.length) >= limit) break;
+                }
+
+                // 2. 如果还是不够，尝试发现“下一页”按钮并准备点击
+                let nextButton = null;
+                if ((alreadyFoundUrls.length + pageLinks.length) < limit) {
+                    nextButton = document.querySelector('#pnnext') || document.querySelector('.sb_pagN') || document.querySelector('a[title="Next"]');
+                    if (nextButton) {
+                        nextButton.click();
+                    }
+                }
+
+                return { links: pageLinks, clickedNext: !!nextButton };
+              },
+              args: [count, extractedLinks.map(l => l.url)]
+            });
+
+            const { links, clickedNext } = results[0].result;
+            extractedLinks.push(...links);
+
+            if (extractedLinks.length >= count || !clickedNext) break;
+            
+            // 如果点击了下一页，等待一页加载的时间
+            await new Promise(r => setTimeout(r, 1000));
+            attempts++;
+
+        } catch (e) {
+            console.error('Deep capture error:', e);
+            break;
         }
+    }
 
-    } catch (e) {
-        console.error('Extraction error:', e);
-        showStatus('提取失败: ' + e.message, 'error');
-        document.getElementById('confirmBtn').disabled = false;
+    if (extractedLinks.length > 0) {
+      showStatus(`成功提取 ${extractedLinks.length} 条结果`, 'success');
+      const searchEngine = document.getElementById('searchEngine').value;
+
+      chrome.runtime.sendMessage({
+        action: 'openLinks',
+        links: extractedLinks,
+        partNumber: partNumber,
+        supplier: supplier,
+        searchEngine: searchEngine,
+        createGroup: createGroup,
+        openSidebar: openSidebar
+      }, () => {
+        // 如果是新开的搜索页且抓取完毕，则关闭它以保持整洁；如果是复用的则保留
+        if (shouldCloseOnFinish) chrome.tabs.remove(tabId).catch(() => {});
+        window.close();
         resolve();
+      });
+    } else {
+      showStatus('未发现结果，请检查搜索词', 'error');
+      document.getElementById('confirmBtn').disabled = false;
+      resolve();
     }
   });
 }
 
-// 构建 URL
+// 构建 URL：强制单页加载参数
 function buildSearchUrl(engine, query) {
   const q = encodeURIComponent(query);
   if (engine === 'google') return `https://www.google.com/search?q=${q}&num=20`;

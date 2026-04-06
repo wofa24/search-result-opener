@@ -65,55 +65,58 @@ getSearchQuery = function() {
   return urlParams.get('q') || '';
 };
 
-// 覆盖common.js中的extractSearchResults函数 (优化：支持翻页以支持50个结果)
-extractSearchResults = async function(count) {
+// 覆盖common.js中的extractSearchResults函数
+extractSearchResults = function(count, filterAds) {
   const results = [];
-  const seen = new Set();
   
-  const extractFromPage = () => {
-    const itemSelectors = ['#rso .g', '.g'];
-    for (const selector of itemSelectors) {
-      const items = document.querySelectorAll(selector);
-      if (items.length > 0) {
-        for (const item of items) {
-          if (results.length >= count) break;
-          const anchor = item.querySelector('a[href]');
-          const titleEl = item.querySelector('h3');
-          if (!anchor || !titleEl) continue;
-          let url = anchor.href;
-          if (url.includes('google.com') && !url.includes('google.com/url?')) continue;
-          
-          if (isValidUrl(url) && !seen.has(url)) {
-            seen.add(url);
-            results.push({
-              url: url,
-              title: titleEl.textContent.trim(),
-              favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}`
-            });
-          }
-        }
-        break;
-      }
-    }
-  };
-
-  extractFromPage();
-
-  // 如果结果不够，尝试点击“下一页”
-  let attempts = 0;
-  while (results.length < count && attempts < 5) {
-    const nextBtn = document.querySelector('#pnnext');
-    if (nextBtn) {
-      nextBtn.click();
-      await new Promise(r => setTimeout(r, 2000));
-      extractFromPage();
-      attempts++;
-    } else {
+  // Google搜索结果的多个可能选择器
+  const selectors = [
+    '#search .g a[href]',
+    '#rso .g a[href]',
+    '.g a[jsname]'
+  ];
+  
+  let links = [];
+  
+  // 尝试每个选择器
+  for (const selector of selectors) {
+    links = document.querySelectorAll(selector);
+    if (links.length > 0) {
       break;
     }
   }
-
-  return results.slice(0, count);
+  
+  // 提取链接
+  const seenUrls = new Set();
+  
+  for (let i = 0; i < links.length && results.length < count; i++) {
+    const link = links[i];
+    let url = link.href;
+    
+    // 跳过已经添加的URL
+    if (seenUrls.has(url)) {
+      continue;
+    }
+    
+    // 验证URL
+    if (isValidUrl(url, filterAds)) {
+      // 确保不是Google内部链接
+      const isGoogleInternal = 
+        url.includes('google.com/search') ||
+        url.includes('google.com/url') ||
+        url.includes('accounts.google.com') ||
+        url.includes('support.google.com') ||
+        url.includes('webcache.googleusercontent.com');
+      
+      if (!isGoogleInternal) {
+        results.push(url);
+        seenUrls.add(url);
+      }
+    }
+  }
+  
+  // 去重并限制数量
+  return uniqueUrls(results).slice(0, count);
 };
 
 console.log('Google content script loaded');

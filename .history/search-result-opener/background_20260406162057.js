@@ -9,8 +9,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.error('Error opening links:', error);
         sendResponse({ success: false, error: error.message });
       });
-    return true; 
+    return true; // 保持消息通道开放
   } else if (request.action === 'switchToTab') {
+    // 切换到指定标签页
     chrome.tabs.update(request.tabId, { active: true }, (tab) => {
       if (tab) {
         chrome.windows.update(tab.windowId, { focused: true });
@@ -23,7 +24,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// 直接批量打开链接并进行标签页群组化 (已彻底移除 navigation.html 相关冗余)
+// 直接批量打开链接并进行标签页群组化
 async function openLinksDirectly(links, partNumber, supplier, searchEngine, createGroup, openSidebar) {
   try {
     if (!Array.isArray(links)) throw new Error('无效的结果列表');
@@ -32,10 +33,12 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
     const resultTabs = [];
     let groupId = null;
 
+    // 1. 批量创建标签页
     for (let i = 0; i < urls.length; i++) {
         const tab = await chrome.tabs.create({ url: urls[i], active: false });
         resultTabs.push(tab);
 
+        // 标签页分组
         if (createGroup) {
             if (i === 0) {
                 groupId = await chrome.tabs.group({ tabIds: tab.id });
@@ -45,14 +48,14 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
             }
         }
         
-        // 自动填表逻辑
+        // 自动填表逻辑保持异步注入
         (async (id) => {
             await waitForTabLoad(id);
             chrome.tabs.sendMessage(id, { fAction: 'smartFillAndSearch', partNumber }).catch(() => {});
         })(tab.id);
     }
     
-    // 统一保存组信息
+    // 2. 保存组信息以便侧边栏读取
     const currentGroupData = {
       groupId: groupId,
       partNumber: partNumber,
@@ -64,10 +67,12 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
     
     await chrome.storage.local.set({ currentGroup: currentGroupData });
     
+    // 3. 激活第一个结果页
     if (resultTabs.length > 0) {
         await chrome.tabs.update(resultTabs[0].id, { active: true });
     }
 
+    // 4. 打开侧边栏
     if (openSidebar) {
       const activeTab = resultTabs[0] || (await chrome.tabs.query({active: true, currentWindow: true}))[0];
       if (activeTab) await chrome.sidePanel.open({ windowId: activeTab.windowId });
@@ -80,6 +85,7 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
   }
 }
 
+// 等待标签页加载完成
 function waitForTabLoad(tabId, timeout = 30000) {
   return new Promise((resolve) => {
     const startTime = Date.now();
@@ -107,11 +113,13 @@ function waitForTabLoad(tabId, timeout = 30000) {
   });
 }
 
+// 监听标签页关闭事件，更新存储的组信息
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   try {
     const data = await chrome.storage.local.get('currentGroup');
     if (data.currentGroup && data.currentGroup.tabIds) {
       const updatedTabIds = data.currentGroup.tabIds.filter(id => id !== tabId);
+      
       if (updatedTabIds.length > 0) {
         data.currentGroup.tabIds = updatedTabIds;
         await chrome.storage.local.set({ currentGroup: data.currentGroup });
