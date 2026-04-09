@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "搜索结果批量打开器",
-  "version": "3.2.0",
+  "version": "3.0.0",
   "description": "一键打开Bing/Google搜索结果的前N个链接，支持侧边栏导航和标签页分组",
   "permissions": [
     "tabs",
@@ -31,15 +31,6 @@
   "background": {
     "service_worker": "background.js"
   },
-  "commands": {
-    "quick-open-results": {
-      "suggested_key": {
-        "default": "Alt+Shift+O",
-        "mac": "Alt+Shift+O"
-      },
-      "description": "在搜索页快速打开前N个结果（N在插件高级设置中配置，默认10）"
-    }
-  },
   "content_scripts": [
     {
       "matches": [
@@ -54,6 +45,11 @@
         "https://www.google.com.hk/*"
       ],
       "js": ["content-scripts/common.js", "content-scripts/google.js"]
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-scripts/thumbnail-panel.js"],
+      "run_at": "document_idle"
     }
   ],
   "icons": {

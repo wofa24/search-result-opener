@@ -85,7 +85,6 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
       supplier: supplier,
       searchEngine: searchEngine,
       tabIds: resultTabs.map(t => t.id),
-      pinnedTabIds: [],
       timestamp: Date.now()
     };
     

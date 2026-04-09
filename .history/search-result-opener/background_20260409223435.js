@@ -21,8 +21,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.action === 'quickOpenFromContent') {
     // 来自 content script 的快捷键触发：直接打开已提取的链接
-    const { links, partNumber, searchEngine, createGroup, openSidebar } = request;
-    openLinksDirectly(links, partNumber, '', searchEngine, createGroup !== false, openSidebar !== false)
+    const { links, partNumber, searchEngine } = request;
+    openLinksDirectly(links, partNumber, '', searchEngine, true, true)
       .then(() => sendResponse({ success: true }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
@@ -85,7 +85,6 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
       supplier: supplier,
       searchEngine: searchEngine,
       tabIds: resultTabs.map(t => t.id),
-      pinnedTabIds: [],
       timestamp: Date.now()
     };
     

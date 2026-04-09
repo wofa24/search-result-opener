@@ -134,15 +134,13 @@ body {
 /* 标签页项 */
 .tab-item {
   display: flex;
-  align-items: center;
-  padding: 10px 8px 10px 12px;
+  padding: 12px;
   margin-bottom: 8px;
   background: white;
   border: 2px solid #e0e0e0;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
-  position: relative;
 }
 
 .tab-item:hover {
@@ -264,74 +262,4 @@ body {
 .nav-btn span:first-child {
   font-size: 18px;
   font-weight: bold;
-}
-
-/* 标签页关闭按钮 */
-.tab-close-btn {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  color: #bbb;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 6px;
-  transition: all 0.2s;
-  padding: 0;
-}
-
-.tab-close-btn:hover {
-  background: #ffebee;
-  color: #c62828;
-}
-
-.tab-item.active .tab-close-btn {
-  color: #90caf9;
-}
-
-.tab-item.active .tab-close-btn:hover {
-  background: #ffebee;
-  color: #c62828;
-}
-
-/* 旗帜置顶按钮 */
-.tab-pin-btn {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 4px;
-  transition: all 0.2s;
-  padding: 0;
-  opacity: 0.35;
-}
-
-.tab-pin-btn:hover {
-  opacity: 1;
-  background: #fff8e1;
-  transform: scale(1.15);
-}
-
-.tab-pin-btn.pinned {
-  opacity: 1;
-  background: #fff3cd;
-  border-radius: 4px;
-}
-
-.tab-pin-btn.pinned:hover {
-  background: #ffe082;
 }

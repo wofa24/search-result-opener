@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "搜索结果批量打开器",
-  "version": "3.2.0",
+  "version": "3.1.0",
   "description": "一键打开Bing/Google搜索结果的前N个链接，支持侧边栏导航和标签页分组",
   "permissions": [
     "tabs",

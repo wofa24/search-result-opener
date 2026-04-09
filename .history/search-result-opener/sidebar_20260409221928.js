@@ -47,9 +47,6 @@ function setupEventListeners() {
   });
 }
 
-// 当前 pinnedTabIds（全局，供 renderTabList 使用）
-let pinnedTabIds = [];
-
 // 加载标签页组信息
 async function loadTabGroup() {
   try {
@@ -62,7 +59,6 @@ async function loadTabGroup() {
     
     const groupInfo = data.currentGroup;
     currentGroupId = groupInfo.groupId;
-    pinnedTabIds = groupInfo.pinnedTabIds || [];
     
     document.getElementById('partNumber').textContent = groupInfo.partNumber || '-';
     document.getElementById('supplier').textContent = groupInfo.supplier || '-';
@@ -72,12 +68,7 @@ async function loadTabGroup() {
     );
     
     const allTabs = await Promise.all(tabPromises);
-    const validTabs = allTabs.filter(tab => tab !== null);
-
-    // 排序：被旗帜标记的排在最前，其余按原序
-    const pinned = validTabs.filter(t => pinnedTabIds.includes(t.id));
-    const unpinned = validTabs.filter(t => !pinnedTabIds.includes(t.id));
-    tabs = [...pinned, ...unpinned];
+    tabs = allTabs.filter(tab => tab !== null);
     
     document.getElementById('tabCount').textContent = `${tabs.length}个页面`;
     
@@ -121,32 +112,6 @@ async function closeTab(tabId, event) {
   }
 }
 
-// 切换旗帜标记（支持多个，所有被标记的显示在最前）
-async function togglePinTab(tabId, event) {
-  event.stopPropagation();
-  try {
-    const data = await chrome.storage.local.get('currentGroup');
-    if (!data.currentGroup) return;
-    const group = data.currentGroup;
-    if (!group.pinnedTabIds) group.pinnedTabIds = [];
-
-    const pinIdx = group.pinnedTabIds.indexOf(tabId);
-    if (pinIdx === -1) {
-      // 未标记 → 标记
-      group.pinnedTabIds.push(tabId);
-    } else {
-      // 已标记 → 取消标记
-      group.pinnedTabIds.splice(pinIdx, 1);
-    }
-
-    await chrome.storage.local.set({ currentGroup: group });
-    // 立即刷新列表
-    await loadTabGroup();
-  } catch (e) {
-    console.error('pin tab error:', e);
-  }
-}
-
 // 渲染标签页列表
 function renderTabList() {
   const tabList = document.getElementById('tabList');
@@ -178,9 +143,6 @@ function renderTabList() {
     const favicon = tab.favIconUrl || 
       'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>';
 
-    // 是否已被旗帜标记
-    const isPinned = pinnedTabIds.includes(tab.id);
-
     tabItem.innerHTML = `
       <div class="tab-favicon">
         <img src="${favicon}" 
@@ -194,7 +156,6 @@ function renderTabList() {
         </div>
         <div class="tab-url" title="${escapeHtml(hostname)}">${escapeHtml(hostname)}</div>
       </div>
-      <button class="tab-pin-btn${isPinned ? ' pinned' : ''}" title="${isPinned ? '取消标记' : '标记并置顶'}">🚩</button>
       <button class="tab-close-btn" title="关闭此页面">×</button>
     `;
     
@@ -202,11 +163,6 @@ function renderTabList() {
     tabItem.addEventListener('click', () => {
       chrome.tabs.update(tab.id, { active: true });
       chrome.windows.update(tab.windowId, { focused: true });
-    });
-
-    // 旗帜按钮（切换标记）
-    tabItem.querySelector('.tab-pin-btn').addEventListener('click', (e) => {
-      togglePinTab(tab.id, e);
     });
 
     // 关闭按钮

@@ -10,6 +10,7 @@
   <div class="container">
     <div class="header">
       <h2>搜索结果批量打开器</h2>
+      <button id="optionsBtn" class="options-btn" title="快捷键设置">⌨️</button>
     </div>
     
     <div class="scroll-area">
@@ -37,6 +38,7 @@
           <input type="checkbox" id="exactMatch">
           <span>完全匹配</span>
         </label>
+        
         <label for="fileType">文件格式:</label>
         <select id="fileType" class="select-input">
           <option value="none">不限制</option>
@@ -73,31 +75,32 @@
           </label>
         </div>
       </div>
-
+      
       <div class="form-group">
-        <label class="checkbox-label" id="createGroupLabel">
-          <input type="checkbox" id="createGroup" checked>
-          <span>创建标签页组</span>
-          <span class="feature-badge" id="createGroupBadge"></span>
-        </label>
-      </div>
+        <div class="advanced-toggle" id="advancedToggle">
+          <span class="toggle-icon">▶</span>
+          <span>高级功能</span>
+        </div>
+        
+        <div class="advanced-options" id="advancedOptions" style="display: none;">
+          <label for="siteLimit">限定站点 <span class="hint-text">(多个用逗号分隔，如 1688.com,jd.com)</span>:</label>
+          <input type="text" id="siteLimit" class="select-input" placeholder="例: 1688.com, jd.com">
+          
+          <label for="excludeSite">排除站点 <span class="hint-text">(多个用逗号分隔，如 zhihu.com,csdn.net)</span>:</label>
+          <input type="text" id="excludeSite" class="select-input" placeholder="例: zhihu.com, csdn.net">
 
-      <!-- 快捷键设置区 -->
-      <div class="form-group shortcut-group">
-        <div class="shortcut-header">
-          <span class="shortcut-title">⌨️ 快捷键设置</span>
-        </div>
-        <div class="shortcut-row">
-          <div class="shortcut-info-row">
-            <span class="shortcut-label">当前快捷键:</span>
-            <span class="shortcut-key-display" id="currentShortcut">读取中...</span>
-          </div>
-          <button class="shortcut-link-btn" id="openShortcutsBtn" title="前往 Chrome 修改快捷键">修改快捷键 →</button>
-        </div>
-        <div class="shortcut-count-row">
-          <label for="quickOpenCount" class="shortcut-count-label">快捷键打开数量:</label>
-          <input type="number" id="quickOpenCount" class="shortcut-count-input" min="1" max="50" value="10">
-          <span class="shortcut-count-hint">个页面</span>
+          <div class="advanced-section-divider">标签页与导航</div>
+
+          <label class="checkbox-label" id="createGroupLabel">
+            <input type="checkbox" id="createGroup" checked>
+            <span>创建标签页组</span>
+            <span class="feature-badge" id="createGroupBadge"></span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="openSidebar" checked>
+            <span>打开后自动开启侧边栏导航</span>
+            <span class="feature-badge" id="openSidebarBadge"></span>
+          </label>
         </div>
       </div>
 

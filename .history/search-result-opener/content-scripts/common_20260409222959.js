@@ -19,8 +19,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'quickExtractAndOpen') {
     const count = request.count || 10;
-    const createGroup = request.createGroup !== false;
-    const openSidebar = request.openSidebar !== false;
     try {
       const links = extractSearchLinks(count);
       if (links.length === 0) {
@@ -37,9 +35,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         action: 'quickOpenFromContent',
         links: links.slice(0, count),
         partNumber: partNumber,
-        searchEngine: searchEngine,
-        createGroup: createGroup,
-        openSidebar: openSidebar
+        searchEngine: searchEngine
       }, (resp) => {
         sendResponse(resp || { success: true });
       });

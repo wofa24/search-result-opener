@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "搜索结果批量打开器",
-  "version": "3.2.0",
+  "version": "3.1.0",
   "description": "一键打开Bing/Google搜索结果的前N个链接，支持侧边栏导航和标签页分组",
   "permissions": [
     "tabs",
@@ -37,7 +37,7 @@
         "default": "Alt+Shift+O",
         "mac": "Alt+Shift+O"
       },
-      "description": "在搜索页快速打开前N个结果（N在插件高级设置中配置，默认10）"
+      "description": "在搜索页快速打开前10个结果"
     }
   },
   "content_scripts": [

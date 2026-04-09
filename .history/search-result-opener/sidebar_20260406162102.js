@@ -47,12 +47,10 @@ function setupEventListeners() {
   });
 }
 
-// 当前 pinnedTabIds（全局，供 renderTabList 使用）
-let pinnedTabIds = [];
-
 // 加载标签页组信息
 async function loadTabGroup() {
   try {
+    // 从storage获取当前组信息
     const data = await chrome.storage.local.get('currentGroup');
     
     if (!data.currentGroup || !data.currentGroup.tabIds || data.currentGroup.tabIds.length === 0) {
@@ -62,29 +60,30 @@ async function loadTabGroup() {
     
     const groupInfo = data.currentGroup;
     currentGroupId = groupInfo.groupId;
-    pinnedTabIds = groupInfo.pinnedTabIds || [];
     
+    // 更新信息显示
     document.getElementById('partNumber').textContent = groupInfo.partNumber || '-';
     document.getElementById('supplier').textContent = groupInfo.supplier || '-';
     
+    // 获取所有标签页信息
     const tabPromises = groupInfo.tabIds.map(id => 
       chrome.tabs.get(id).catch(() => null)
     );
     
     const allTabs = await Promise.all(tabPromises);
-    const validTabs = allTabs.filter(tab => tab !== null);
-
-    // 排序：被旗帜标记的排在最前，其余按原序
-    const pinned = validTabs.filter(t => pinnedTabIds.includes(t.id));
-    const unpinned = validTabs.filter(t => !pinnedTabIds.includes(t.id));
-    tabs = [...pinned, ...unpinned];
+    tabs = allTabs.filter(tab => tab !== null);
     
+    // 更新标签页数量
     document.getElementById('tabCount').textContent = `${tabs.length}个页面`;
     
+    // 获取当前活动标签页
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     currentTabId = activeTab ? activeTab.id : null;
     
+    // 渲染标签页列表
     renderTabList();
+    
+    // 更新导航按钮状态
     updateNavigationButtons();
   } catch (error) {
     console.error('Error loading tab group:', error);
@@ -110,43 +109,6 @@ function showEmptyState() {
   document.getElementById('nextBtn').disabled = true;
 }
 
-// 关闭单个标签页
-async function closeTab(tabId, event) {
-  event.stopPropagation();
-  try {
-    await chrome.tabs.remove(tabId);
-    // tabs.onRemoved 会触发 loadTabGroup 自动刷新
-  } catch (e) {
-    console.error('close tab error:', e);
-  }
-}
-
-// 切换旗帜标记（支持多个，所有被标记的显示在最前）
-async function togglePinTab(tabId, event) {
-  event.stopPropagation();
-  try {
-    const data = await chrome.storage.local.get('currentGroup');
-    if (!data.currentGroup) return;
-    const group = data.currentGroup;
-    if (!group.pinnedTabIds) group.pinnedTabIds = [];
-
-    const pinIdx = group.pinnedTabIds.indexOf(tabId);
-    if (pinIdx === -1) {
-      // 未标记 → 标记
-      group.pinnedTabIds.push(tabId);
-    } else {
-      // 已标记 → 取消标记
-      group.pinnedTabIds.splice(pinIdx, 1);
-    }
-
-    await chrome.storage.local.set({ currentGroup: group });
-    // 立即刷新列表
-    await loadTabGroup();
-  } catch (e) {
-    console.error('pin tab error:', e);
-  }
-}
-
 // 渲染标签页列表
 function renderTabList() {
   const tabList = document.getElementById('tabList');
@@ -157,17 +119,15 @@ function renderTabList() {
   }
   
   tabList.innerHTML = '';
-  let activeItem = null;
   
   tabs.forEach((tab, index) => {
     const tabItem = document.createElement('div');
     tabItem.className = 'tab-item';
-    const isActive = tab.id === currentTabId;
-    if (isActive) {
+    if (tab.id === currentTabId) {
       tabItem.classList.add('active');
-      activeItem = tabItem;
     }
     
+    // 获取域名
     let hostname = '-';
     try {
       hostname = new URL(tab.url).hostname;
@@ -175,15 +135,9 @@ function renderTabList() {
       hostname = tab.url;
     }
     
-    const favicon = tab.favIconUrl || 
-      'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>';
-
-    // 是否已被旗帜标记
-    const isPinned = pinnedTabIds.includes(tab.id);
-
     tabItem.innerHTML = `
       <div class="tab-favicon">
-        <img src="${favicon}" 
+        <img src="${tab.favIconUrl || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>'}" 
              alt="favicon"
              onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>'">
       </div>
@@ -194,8 +148,6 @@ function renderTabList() {
         </div>
         <div class="tab-url" title="${escapeHtml(hostname)}">${escapeHtml(hostname)}</div>
       </div>
-      <button class="tab-pin-btn${isPinned ? ' pinned' : ''}" title="${isPinned ? '取消标记' : '标记并置顶'}">🚩</button>
-      <button class="tab-close-btn" title="关闭此页面">×</button>
     `;
     
     // 点击跳转到标签页
@@ -203,26 +155,9 @@ function renderTabList() {
       chrome.tabs.update(tab.id, { active: true });
       chrome.windows.update(tab.windowId, { focused: true });
     });
-
-    // 旗帜按钮（切换标记）
-    tabItem.querySelector('.tab-pin-btn').addEventListener('click', (e) => {
-      togglePinTab(tab.id, e);
-    });
-
-    // 关闭按钮
-    tabItem.querySelector('.tab-close-btn').addEventListener('click', (e) => {
-      closeTab(tab.id, e);
-    });
     
     tabList.appendChild(tabItem);
   });
-
-  // active 项滚动到可视区域中间
-  if (activeItem) {
-    requestAnimationFrame(() => {
-      activeItem.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    });
-  }
 }
 
 // 导航到上一个/下一个标签页
@@ -232,11 +167,13 @@ async function navigateTab(direction) {
   const currentIndex = tabs.findIndex(t => t.id === currentTabId);
   
   if (currentIndex === -1) {
+    // 如果当前标签页不在列表中，跳转到第一个
     await chrome.tabs.update(tabs[0].id, { active: true });
     await chrome.windows.update(tabs[0].windowId, { focused: true });
     return;
   }
   
+  // 计算下一个索引（循环）
   const nextIndex = (currentIndex + direction + tabs.length) % tabs.length;
   const nextTab = tabs[nextIndex];
   
@@ -261,11 +198,11 @@ function updateNavigationButtons() {
 // HTML转义函数
 function escapeHtml(text) {
   const div = document.createElement('div');
-  div.textContent = text || '';
+  div.textContent = text;
   return div.innerHTML;
 }
 
-// 定期刷新
+// 定期刷新（可选）
 setInterval(() => {
   loadTabGroup();
 }, 3000);

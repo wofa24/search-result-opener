@@ -6,27 +6,20 @@
 
 body {
   width: 380px;
-  height: 560px;
   font-family: 'Microsoft YaHei', 'Segoe UI', Arial, sans-serif;
   font-size: 14px;
   color: #333;
   background: #f5f5f5;
-  overflow: hidden;
 }
 
 .container {
-  display: flex;
-  flex-direction: column;
-  height: 560px;
+  padding: 16px;
   background: white;
 }
 
 .header {
-  flex-shrink: 0;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
   border-bottom: 2px solid #0078d4;
 }
 
@@ -36,49 +29,8 @@ body {
   font-weight: 600;
 }
 
-.options-btn {
-  background: none;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  padding: 4px 8px;
-  cursor: pointer;
-  font-size: 16px;
-  color: #666;
-  transition: all 0.2s;
-}
-
-.options-btn:hover {
-  background: #e3f2fd;
-  border-color: #0078d4;
-  color: #0078d4;
-}
-
-/* 可滚动内容区 */
-.scroll-area {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 16px;
-}
-
-.scroll-area::-webkit-scrollbar {
-  width: 6px;
-}
-
-.scroll-area::-webkit-scrollbar-track {
-  background: #f1f1f1;
-}
-
-.scroll-area::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 3px;
-}
-
-.scroll-area::-webkit-scrollbar-thumb:hover {
-  background: #a1a1a1;
-}
-
 .form-group {
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .form-group label {
@@ -107,7 +59,7 @@ body {
 .radio-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .radio-label {
@@ -115,7 +67,7 @@ body {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  padding: 5px 6px;
+  padding: 6px;
   border-radius: 4px;
   transition: background-color 0.2s;
 }
@@ -148,7 +100,7 @@ body {
   gap: 8px;
   margin-bottom: 8px;
   cursor: pointer;
-  padding: 5px 6px;
+  padding: 6px;
   border-radius: 4px;
   transition: background-color 0.2s;
 }
@@ -161,28 +113,10 @@ body {
   cursor: pointer;
 }
 
-/* 功能可用性徽章 */
-.feature-badge {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  margin-left: auto;
-}
-
-.feature-badge.available {
-  background: #e8f5e9;
-  color: #2e7d32;
-}
-
-.feature-badge.unavailable {
-  background: #ffebee;
-  color: #c62828;
-}
-
 .status {
   min-height: 20px;
   padding: 8px;
-  margin-bottom: 4px;
+  margin-bottom: 12px;
   border-radius: 4px;
   font-size: 13px;
   text-align: center;
@@ -203,15 +137,9 @@ body {
   color: #2e7d32;
 }
 
-/* 固定底部按钮区 */
 .button-group {
-  flex-shrink: 0;
   display: flex;
   gap: 8px;
-  padding: 10px 16px;
-  background: white;
-  border-top: 1px solid #eee;
-  box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
 }
 
 .btn {
@@ -253,7 +181,7 @@ body {
   background-color: white;
   cursor: pointer;
   transition: border-color 0.3s;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .select-input:focus {
@@ -265,119 +193,76 @@ body {
   border-color: #0078d4;
 }
 
-/* 快捷键设置区域 */
-.shortcut-group {
-  background: #f8f9ff;
-  border: 1px solid #d0e4ff;
-  border-radius: 8px;
-  padding: 12px 14px;
-}
-
-.shortcut-header {
-  margin-bottom: 10px;
-}
-
-.shortcut-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #0078d4;
-}
-
-.shortcut-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.shortcut-info-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.shortcut-label {
-  font-size: 12px;
-  color: #666;
-  white-space: nowrap;
-}
-
-.shortcut-key-display {
-  font-family: monospace;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 5px;
-  letter-spacing: 0.5px;
-}
-
-.shortcut-key-display.set {
-  background: #0078d4;
-  color: white;
-}
-
-.shortcut-key-display.unset {
-  background: #f0f0f0;
-  color: #999;
-}
-
-.shortcut-link-btn {
-  font-size: 12px;
-  color: #0078d4;
-  background: white;
-  border: 1px solid #0078d4;
-  border-radius: 5px;
-  padding: 4px 10px;
+/* 高级功能折叠区域 */
+.advanced-toggle {
   cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s;
-}
-
-.shortcut-link-btn:hover {
-  background: #0078d4;
-  color: white;
-}
-
-.shortcut-count-row {
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  user-select: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  transition: all 0.3s;
 }
 
-.shortcut-count-label {
-  font-size: 12px;
-  color: #555;
-  white-space: nowrap;
-  margin: 0;
-  font-weight: 500;
-}
-
-.shortcut-count-input {
-  width: 64px;
-  padding: 5px 8px;
-  border: 1px solid #ddd;
-  border-radius: 5px;
-  font-size: 13px;
-  text-align: center;
-  transition: border-color 0.2s;
-}
-
-.shortcut-count-input:focus {
-  outline: none;
+.advanced-toggle:hover {
+  background: linear-gradient(135deg, #e9ecef 0%, #dee2e6 100%);
   border-color: #0078d4;
+  transform: translateX(2px);
 }
 
-.shortcut-count-hint {
-  font-size: 12px;
-  color: #999;
+.toggle-icon {
+  display: inline-block;
+  width: 20px;
+  font-weight: bold;
+  color: #0078d4;
+  transition: transform 0.3s;
+  margin-right: 8px;
+}
+
+.advanced-toggle.expanded .toggle-icon {
+  transform: rotate(90deg);
+}
+
+.advanced-options {
+  padding: 12px;
+  margin-top: 8px;
+  margin-bottom: 12px;
+  border-left: 3px solid #0078d4;
+  background: #f8f9fa;
+  border-radius: 0 4px 4px 0;
+  animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 500px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+}
+
+.advanced-options label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+  color: #555;
+  font-size: 13px;
 }
 
 /* 历史记录样式 */
 .history-container {
-  margin-top: 12px;
-  padding-top: 10px;
+  margin-top: 16px;
+  padding-top: 12px;
   border-top: 1px dashed #ddd;
 }
 

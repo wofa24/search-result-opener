@@ -178,8 +178,8 @@ function renderTabList() {
     const favicon = tab.favIconUrl || 
       'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>';
 
-    // 是否已被旗帜标记
-    const isPinned = pinnedTabIds.includes(tab.id);
+    // 是否已置顶（index === 0）
+    const isPinned = index === 0;
 
     tabItem.innerHTML = `
       <div class="tab-favicon">
@@ -194,7 +194,7 @@ function renderTabList() {
         </div>
         <div class="tab-url" title="${escapeHtml(hostname)}">${escapeHtml(hostname)}</div>
       </div>
-      <button class="tab-pin-btn${isPinned ? ' pinned' : ''}" title="${isPinned ? '取消标记' : '标记并置顶'}">🚩</button>
+      <button class="tab-pin-btn${isPinned ? ' pinned' : ''}" title="${isPinned ? '已置顶' : '标记并置顶'}">🚩</button>
       <button class="tab-close-btn" title="关闭此页面">×</button>
     `;
     
@@ -204,9 +204,9 @@ function renderTabList() {
       chrome.windows.update(tab.windowId, { focused: true });
     });
 
-    // 旗帜按钮（切换标记）
+    // 旗帜按钮（置顶）
     tabItem.querySelector('.tab-pin-btn').addEventListener('click', (e) => {
-      togglePinTab(tab.id, e);
+      pinTabToTop(tab.id, e);
     });
 
     // 关闭按钮

@@ -299,39 +299,3 @@ body {
   background: #ffebee;
   color: #c62828;
 }
-
-/* 旗帜置顶按钮 */
-.tab-pin-btn {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 4px;
-  transition: all 0.2s;
-  padding: 0;
-  opacity: 0.35;
-}
-
-.tab-pin-btn:hover {
-  opacity: 1;
-  background: #fff8e1;
-  transform: scale(1.15);
-}
-
-.tab-pin-btn.pinned {
-  opacity: 1;
-  background: #fff3cd;
-  border-radius: 4px;
-}
-
-.tab-pin-btn.pinned:hover {
-  background: #ffe082;
-}

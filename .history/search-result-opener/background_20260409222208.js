@@ -21,8 +21,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.action === 'quickOpenFromContent') {
     // 来自 content script 的快捷键触发：直接打开已提取的链接
-    const { links, partNumber, searchEngine, createGroup, openSidebar } = request;
-    openLinksDirectly(links, partNumber, '', searchEngine, createGroup !== false, openSidebar !== false)
+    const { links, partNumber, searchEngine } = request;
+    openLinksDirectly(links, partNumber, '', searchEngine, true, true)
       .then(() => sendResponse({ success: true }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
@@ -40,14 +40,12 @@ chrome.commands.onCommand.addListener(async (command) => {
     const isSearchPage = url.includes('bing.com/search') || url.includes('google.com/search');
     if (!isSearchPage) return;
 
-    // 读取用户设置
-    const data = await chrome.storage.local.get(['quickOpenCount', 'quickCreateGroup', 'quickOpenSidebar']);
+    // 读取用户设置的数量（默认10）
+    const data = await chrome.storage.local.get('quickOpenCount');
     const count = data.quickOpenCount || 10;
-    const createGroup = data.quickCreateGroup !== false;
-    const openSidebar = data.quickOpenSidebar !== false;
 
     // 向 content script 发消息触发提取
-    chrome.tabs.sendMessage(tab.id, { action: 'quickExtractAndOpen', count, createGroup, openSidebar }, (response) => {
+    chrome.tabs.sendMessage(tab.id, { action: 'quickExtractAndOpen', count }, (response) => {
       if (chrome.runtime.lastError) {
         console.error('quickOpen error:', chrome.runtime.lastError.message);
       }
@@ -85,7 +83,6 @@ async function openLinksDirectly(links, partNumber, supplier, searchEngine, crea
       supplier: supplier,
       searchEngine: searchEngine,
       tabIds: resultTabs.map(t => t.id),
-      pinnedTabIds: [],
       timestamp: Date.now()
     };
     
