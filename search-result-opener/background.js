@@ -29,31 +29,153 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// 监听快捷键命令
+// 监听快捷键命令（多页提取模式，与 popup 点击确认打开逻辑一致）
 chrome.commands.onCommand.addListener(async (command) => {
   if (command === 'quick-open-results') {
-    // 获取当前活动标签页
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return;
 
     const url = tab.url || '';
-    const isSearchPage = url.includes('bing.com/search') || url.includes('google.com/search');
-    if (!isSearchPage) return;
+    const isBing = url.includes('bing.com/search');
+    const isGoogle = url.includes('google.com/search');
+    if (!isBing && !isGoogle) return;
 
     // 读取用户设置
-    const data = await chrome.storage.local.get(['quickOpenCount', 'quickCreateGroup', 'quickOpenSidebar']);
+    const data = await chrome.storage.local.get(['quickOpenCount']);
     const count = data.quickOpenCount || 10;
-    const createGroup = data.quickCreateGroup !== false;
-    const openSidebar = data.quickOpenSidebar !== false;
+    const createGroup = true;
+    const openSidebar = true;
+    const engine = isBing ? 'bing' : 'google';
 
-    // 向 content script 发消息触发提取
-    chrome.tabs.sendMessage(tab.id, { action: 'quickExtractAndOpen', count, createGroup, openSidebar }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('quickOpen error:', chrome.runtime.lastError.message);
-      }
-    });
+    // 从当前 URL 解析搜索词
+    let partNumber = '';
+    try {
+      const urlObj = new URL(url);
+      const q = urlObj.searchParams.get('q') || '';
+      partNumber = q.trim().split(/\s+/)[0] || '搜索结果';
+    } catch(e) {
+      partNumber = '搜索结果';
+    }
+
+    // 在当前标签页直接进行多页提取
+    await quickMultiPageExtract(tab.id, url, engine, count, partNumber, createGroup, openSidebar);
   }
 });
+
+// 构建翻页 URL（与 popup.js 保持一致）
+function buildPageUrl(baseUrl, engine, page) {
+  try {
+    const originUrl = new URL(baseUrl);
+    if (engine === 'bing') {
+      const q = originUrl.searchParams.get('q') || '';
+      const newUrl = new URL('https://www.bing.com/search');
+      newUrl.searchParams.set('q', q);
+      if (page > 1) newUrl.searchParams.set('first', String((page - 1) * 10 + 1));
+      return newUrl.toString();
+    } else {
+      const q = originUrl.searchParams.get('q') || '';
+      const newUrl = new URL('https://www.google.com/search');
+      newUrl.searchParams.set('q', q);
+      newUrl.searchParams.set('num', '10');
+      if (page > 1) newUrl.searchParams.set('start', String((page - 1) * 10));
+      return newUrl.toString();
+    }
+  } catch(e) {
+    return baseUrl;
+  }
+}
+
+// 等待标签页加载完成
+function waitTabReadyBg(id, timeout = 20000, extraDelay = 800) {
+  return new Promise(res => {
+    const startTime = Date.now();
+    const check = async () => {
+      if (Date.now() - startTime > timeout) return res(null);
+      try {
+        const t = await chrome.tabs.get(id);
+        if (t.status === 'complete') {
+          setTimeout(() => res(t), extraDelay);
+        } else {
+          setTimeout(check, 300);
+        }
+      } catch(e) { res(null); }
+    };
+    check();
+  });
+}
+
+// 从标签页直接提取搜索结果（executeScript 注入）
+async function extractFromTabBg(tabId, engine) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (eng) => {
+        const links = [];
+        let items = [];
+        if (eng === 'bing') {
+          items = Array.from(document.querySelectorAll('#b_results .b_algo, .b_algo'));
+        } else {
+          const candidates = document.querySelectorAll('#rso .g, #search .g, .g');
+          candidates.forEach(el => { if (el.closest('.g') === el) items.push(el); });
+        }
+        for (const item of items) {
+          const anchor = item.querySelector('h2 a, h3 a, a[href]');
+          if (!anchor || !anchor.href) continue;
+          const url = anchor.href;
+          if (!url.startsWith('http')) continue;
+          if (url.includes('bing.com/search') || url.includes('bing.com/aclick') ||
+              url.includes('google.com/search') || url.includes('google.com/aclk') ||
+              url.includes('microsoft.com') || url.includes('googleadservices.com')) continue;
+          const titleEl = item.querySelector('h2, h3') || anchor;
+          const title = titleEl.textContent.trim();
+          if (title.length < 2) continue;
+          links.push({ url, title, favIconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${new URL(url).hostname}` });
+        }
+        return links;
+      },
+      args: [engine]
+    });
+    return results[0].result || [];
+  } catch(e) {
+    console.error('extractFromTabBg error:', e);
+    return [];
+  }
+}
+
+// 快捷键多页提取主函数
+async function quickMultiPageExtract(tabId, baseUrl, engine, count, partNumber, createGroup, openSidebar) {
+  try {
+    const allLinks = [];
+    let page = 1;
+    const maxPages = 5;
+
+    // 确保第一页加载完成
+    await waitTabReadyBg(tabId, 20000, 500);
+
+    while (allLinks.length < count && page <= maxPages) {
+      if (page > 1) {
+        const pageUrl = buildPageUrl(baseUrl, engine, page);
+        await chrome.tabs.update(tabId, { url: pageUrl });
+        await new Promise(r => setTimeout(r, 600));
+        const ready = await waitTabReadyBg(tabId, 20000);
+        if (!ready) break;
+      }
+      const pageLinks = await extractFromTabBg(tabId, engine);
+      if (pageLinks.length === 0) break;
+      for (const link of pageLinks) {
+        allLinks.push(link);
+        if (allLinks.length >= count) break;
+      }
+      page++;
+    }
+
+    if (allLinks.length > 0) {
+      await openLinksDirectly(allLinks.slice(0, count), partNumber, '', engine, createGroup, openSidebar);
+    }
+  } catch(e) {
+    console.error('quickMultiPageExtract error:', e);
+  }
+}
 
 // 直接批量打开链接并进行标签页群组化
 async function openLinksDirectly(links, partNumber, supplier, searchEngine, createGroup, openSidebar) {
