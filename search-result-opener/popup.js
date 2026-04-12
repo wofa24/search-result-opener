@@ -8,22 +8,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
 });
 
-// 检测功能可用性
+// 检测功能可用性（createGroup 始终为 true，无需 UI 控制）
 function checkFeatureAvailability() {
-  const hasTabGroups = typeof chrome.tabGroups !== 'undefined';
-  const createGroupBadge = document.getElementById('createGroupBadge');
-  const createGroupCheckbox = document.getElementById('createGroup');
-  if (createGroupBadge) {
-    if (hasTabGroups) {
-      createGroupBadge.textContent = '';
-      createGroupBadge.className = 'feature-badge available';
-    } else {
-      createGroupBadge.textContent = '不可用';
-      createGroupBadge.className = 'feature-badge unavailable';
-      createGroupCheckbox.disabled = true;
-      createGroupCheckbox.checked = false;
-    }
-  }
+  // 保留函数以兼容调用，无实际逻辑
 }
 
 // 加载当前快捷键显示
@@ -153,7 +140,8 @@ async function handleConfirm() {
   }
 
   const count = getSelectedCount();
-  const createGroup = document.getElementById('createGroup').checked && !document.getElementById('createGroup').disabled;
+  // 创建标签页组始终开启
+  const createGroup = true;
   // 侧边栏始终自动打开
   const openSidebar = true;
 

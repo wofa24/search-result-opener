@@ -32,11 +32,6 @@
       </div>
       
       <div class="form-group">
-        <label>搜索选项:</label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="exactMatch">
-          <span>完全匹配</span>
-        </label>
         <label for="fileType">文件格式:</label>
         <select id="fileType" class="select-input">
           <option value="none">不限制</option>
@@ -45,6 +40,11 @@
           <option value="xls">XLS/XLSX</option>
           <option value="image">图片(JPG/PNG)</option>
         </select>
+        <label>搜索选项:</label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="exactMatch">
+          <span>完全匹配</span>
+        </label>
       </div>
       
       <div class="form-group">
@@ -74,14 +74,6 @@
         </div>
       </div>
 
-      <div class="form-group">
-        <label class="checkbox-label" id="createGroupLabel">
-          <input type="checkbox" id="createGroup" checked>
-          <span>创建标签页组</span>
-          <span class="feature-badge" id="createGroupBadge"></span>
-        </label>
-      </div>
-
       <!-- 快捷键设置区 -->
       <div class="form-group">
         <label>快捷键设置:</label>
@@ -95,7 +87,6 @@
         <div class="shortcut-count-row">
           <label for="quickOpenCount" class="shortcut-count-label">打开数量:</label>
           <input type="number" id="quickOpenCount" class="shortcut-count-input" min="1" max="50" value="10">
-          <span class="shortcut-count-hint">个页面</span>
         </div>
       </div>
 
