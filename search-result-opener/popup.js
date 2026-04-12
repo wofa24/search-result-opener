@@ -52,15 +52,31 @@ async function loadSearchInfo() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && tab.url && isSearchPage(tab.url)) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      chrome.tabs.sendMessage(tab.id, { action: 'getSearchQuery' }, (response) => {
-        if (chrome.runtime.lastError) return;
-        if (response && response.query) {
-          const words = response.query.trim().split(/\s+/);
+      // 优先从 URL 的 ?q= 参数直接提取，最可靠
+      let filled = false;
+      try {
+        const urlObj = new URL(tab.url);
+        const q = urlObj.searchParams.get('q');
+        if (q && q.trim()) {
+          const words = q.trim().split(/\s+/);
           document.getElementById('partNumber').value = words[0] || '';
           document.getElementById('supplier').value = words.slice(1).join(' ') || '';
+          filled = true;
         }
-      });
+      } catch (e) {}
+
+      // 如果 URL 没有 q 参数，尝试从 content script 读取搜索框当前内容
+      if (!filled) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        chrome.tabs.sendMessage(tab.id, { action: 'getSearchQuery' }, (response) => {
+          if (chrome.runtime.lastError) return;
+          if (response && response.query) {
+            const words = response.query.trim().split(/\s+/);
+            document.getElementById('partNumber').value = words[0] || '';
+            document.getElementById('supplier').value = words.slice(1).join(' ') || '';
+          }
+        });
+      }
     }
     showStatus('请输入料号开始搜索', 'info');
   } catch (error) {
