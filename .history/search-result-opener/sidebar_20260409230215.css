@@ -335,15 +335,3 @@ body {
 .tab-pin-btn.pinned:hover {
   background: #ffe082;
 }
-
-/* 关闭未标记按钮 */
-.close-unpinned-btn {
-  color: #c62828;
-  border-color: #ffcdd2;
-}
-
-.close-unpinned-btn:hover {
-  background: #c62828 !important;
-  border-color: #c62828 !important;
-  color: white !important;
-}

@@ -23,11 +23,6 @@ function setupEventListeners() {
   document.getElementById('nextBtn').addEventListener('click', () => {
     navigateTab(1);
   });
-
-  // 关闭未标记页面按钮
-  document.getElementById('closeUnpinnedBtn').addEventListener('click', () => {
-    closeUnpinnedTabs();
-  });
   
   // 监听标签页激活变化（切换高亮）
   chrome.tabs.onActivated.addListener(() => {

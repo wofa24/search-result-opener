@@ -78,7 +78,7 @@ body {
 }
 
 .form-group {
-  margin-bottom: 10px;
+  margin-bottom: 14px;
 }
 
 .form-group label {
@@ -297,13 +297,12 @@ body {
 }
 
 .shortcut-key-display.set {
-  background: transparent;
-  color: #0078d4;
-  font-weight: 700;
+  background: #0078d4;
+  color: white;
 }
 
 .shortcut-key-display.unset {
-  background: transparent;
+  background: #f0f0f0;
   color: #999;
 }
 

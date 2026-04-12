@@ -15,7 +15,7 @@ function checkFeatureAvailability() {
   const createGroupCheckbox = document.getElementById('createGroup');
   if (createGroupBadge) {
     if (hasTabGroups) {
-      createGroupBadge.textContent = '';
+      createGroupBadge.textContent = '可用';
       createGroupBadge.className = 'feature-badge available';
     } else {
       createGroupBadge.textContent = '不可用';
@@ -88,17 +88,15 @@ function setupEventListeners() {
 
   document.getElementById('confirmBtn').addEventListener('click', handleConfirm);
 
-  // 快捷键打开数量变更时自动保存（input + change 双重保证）
+  // 快捷键打开数量变更时自动保存
   const quickOpenCountEl = document.getElementById('quickOpenCount');
   if (quickOpenCountEl) {
-    const saveQuickOpenCount = () => {
+    quickOpenCountEl.addEventListener('change', () => {
       const val = parseInt(quickOpenCountEl.value);
       if (!isNaN(val) && val >= 1 && val <= 50) {
         chrome.storage.local.set({ quickOpenCount: val });
       }
-    };
-    quickOpenCountEl.addEventListener('input', saveQuickOpenCount);
-    quickOpenCountEl.addEventListener('change', saveQuickOpenCount);
+    });
   }
 
   // 前往 Chrome 快捷键设置

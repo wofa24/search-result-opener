@@ -23,11 +23,6 @@ function setupEventListeners() {
   document.getElementById('nextBtn').addEventListener('click', () => {
     navigateTab(1);
   });
-
-  // 关闭未标记页面按钮
-  document.getElementById('closeUnpinnedBtn').addEventListener('click', () => {
-    closeUnpinnedTabs();
-  });
   
   // 监听标签页激活变化（切换高亮）
   chrome.tabs.onActivated.addListener(() => {
@@ -299,19 +294,6 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text || '';
   return div.innerHTML;
-}
-
-// 关闭所有未标记旗帜的页面
-async function closeUnpinnedTabs() {
-  try {
-    const unpinnedTabs = tabs.filter(t => !pinnedTabIds.includes(t.id));
-    if (unpinnedTabs.length === 0) return;
-    const tabIds = unpinnedTabs.map(t => t.id);
-    await chrome.tabs.remove(tabIds);
-    // tabs.onRemoved 会触发 loadTabGroup 自动刷新
-  } catch (e) {
-    console.error('closeUnpinnedTabs error:', e);
-  }
 }
 
 // 定期刷新

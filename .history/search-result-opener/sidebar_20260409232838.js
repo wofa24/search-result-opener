@@ -23,11 +23,6 @@ function setupEventListeners() {
   document.getElementById('nextBtn').addEventListener('click', () => {
     navigateTab(1);
   });
-
-  // 关闭未标记页面按钮
-  document.getElementById('closeUnpinnedBtn').addEventListener('click', () => {
-    closeUnpinnedTabs();
-  });
   
   // 监听标签页激活变化（切换高亮）
   chrome.tabs.onActivated.addListener(() => {
@@ -136,9 +131,7 @@ async function togglePinTab(tabId, event) {
     if (!group.pinnedTabIds) group.pinnedTabIds = [];
 
     const pinIdx = group.pinnedTabIds.indexOf(tabId);
-    const isNewPin = pinIdx === -1;
-
-    if (isNewPin) {
+    if (pinIdx === -1) {
       // 未标记 → 标记
       group.pinnedTabIds.push(tabId);
     } else {
@@ -147,35 +140,6 @@ async function togglePinTab(tabId, event) {
     }
 
     await chrome.storage.local.set({ currentGroup: group });
-
-    // 如果是新标记操作，自动跳到下一个未标记的页面
-    if (isNewPin) {
-      // 在当前 tabs 列表中找到被标记项的位置，然后找下一个未被标记的 tab
-      const currentIndex = tabs.findIndex(t => t.id === tabId);
-      const newPinnedIds = group.pinnedTabIds;
-      let nextTab = null;
-      // 从当前位置往后找第一个未标记的
-      for (let i = currentIndex + 1; i < tabs.length; i++) {
-        if (!newPinnedIds.includes(tabs[i].id)) {
-          nextTab = tabs[i];
-          break;
-        }
-      }
-      // 如果后面没有，从头找
-      if (!nextTab) {
-        for (let i = 0; i < currentIndex; i++) {
-          if (!newPinnedIds.includes(tabs[i].id)) {
-            nextTab = tabs[i];
-            break;
-          }
-        }
-      }
-      if (nextTab) {
-        await chrome.tabs.update(nextTab.id, { active: true });
-        await chrome.windows.update(nextTab.windowId, { focused: true });
-      }
-    }
-
     // 立即刷新列表
     await loadTabGroup();
   } catch (e) {
@@ -299,19 +263,6 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text || '';
   return div.innerHTML;
-}
-
-// 关闭所有未标记旗帜的页面
-async function closeUnpinnedTabs() {
-  try {
-    const unpinnedTabs = tabs.filter(t => !pinnedTabIds.includes(t.id));
-    if (unpinnedTabs.length === 0) return;
-    const tabIds = unpinnedTabs.map(t => t.id);
-    await chrome.tabs.remove(tabIds);
-    // tabs.onRemoved 会触发 loadTabGroup 自动刷新
-  } catch (e) {
-    console.error('closeUnpinnedTabs error:', e);
-  }
 }
 
 // 定期刷新
