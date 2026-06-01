@@ -336,6 +336,18 @@ body {
   background: #ffe082;
 }
 
+/* 保存图片按钮 */
+.capture-btn {
+  color: #0078d4;
+  border-color: #b3d9ff;
+}
+
+.capture-btn:hover {
+  background: #0078d4 !important;
+  border-color: #0078d4 !important;
+  color: white !important;
+}
+
 /* 关闭未标记按钮 */
 .close-unpinned-btn {
   color: #c62828;
