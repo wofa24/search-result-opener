@@ -354,7 +354,7 @@ async function startImageCapture() {
     // 检查是否为受限页面（chrome://, chrome-extension:// 等无法注入脚本）
     if (tab.url && (tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://") || tab.url.startsWith("about:"))) {
       btn.querySelector("span:last-child").textContent = "此页面不支持";
-      setTimeout(() => { btn.querySelector("span:last-child").textContent = "保存图片"; }, 2000);
+      setTimeout(() => { btn.querySelector("span:last-child").textContent = "保存截图"; }, 2000);
       return;
     }
 
@@ -372,19 +372,22 @@ async function startImageCapture() {
   } catch (e) {
     console.error("startImageCapture error:", e);
     btn.querySelector("span:last-child").textContent = "注入失败";
-    setTimeout(() => { btn.querySelector("span:last-child").textContent = "保存图片"; }, 2000);
+    setTimeout(() => { btn.querySelector("span:last-child").textContent = "保存截图"; }, 2000);
   }
 }
 
 // ============================================================
-// 元素捕捉器（注入到目标标签页执行）
-// 类似 DevTools inspect + Save to Notion：
-// 鼠标移动 → 蓝色遮罩跟随 → 点击截图保存 → Esc 退出
+// 元素 / 区域捕捉器（注入到目标标签页执行）
+// 类似 Save to Notion — Save Custom Area：
+//   元素模式: 鼠标移动 → 蓝色遮罩 + tooltip 信息 → 滚轮切换父/子元素 → 单击保存
+//   区域模式: 按 R 切换 → 拖拽框选矩形区域 → 松开保存
+//   Esc 退出
 // ============================================================
 function injectImageCapture(partNumber) {
   // --- 清理上一次残留 ---
   if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
-  ["__img_capture_banner", "__img_capture_overlay", "__img_capture_style"].forEach(function (id) {
+  var IDS = ["__imgc_banner", "__imgc_overlay", "__imgc_tooltip", "__imgc_rect", "__imgc_style"];
+  IDS.forEach(function (id) {
     try { var old = document.getElementById(id); if (old) old.remove(); } catch (e) {}
   });
 
@@ -392,43 +395,85 @@ function injectImageCapture(partNumber) {
   window.__img_capture_gen = (window.__img_capture_gen || 0) + 1;
   var currentGen = window.__img_capture_gen;
 
-  // --- 注入样式 ---
+  // ================================================================
+  // 注入样式
+  // ================================================================
   var style = document.createElement("style");
-  style.id = "__img_capture_style";
+  style.id = "__imgc_style";
   style.textContent =
-    "#__img_capture_banner{" +
+    "#__imgc_banner{" +
       "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
-      "padding:8px 16px;text-align:center;pointer-events:none;" +
+      "padding:10px 16px;text-align:center;pointer-events:none;" +
       "background:linear-gradient(135deg,#1a73e8,#1557b0);color:#fff;font-size:13px;" +
       "font-family:system-ui,'Microsoft YaHei',sans-serif;" +
-      "box-shadow:0 2px 12px rgba(0,0,0,0.2);" +
+      "box-shadow:0 2px 12px rgba(0,0,0,0.25);line-height:1.5;" +
     "}" +
-    "#__img_capture_overlay{" +
+    "#__imgc_banner kbd{" +
+      "display:inline-block;padding:1px 6px;margin:0 2px;" +
+      "background:rgba(255,255,255,0.2);border-radius:3px;" +
+      "font-size:12px;font-family:monospace;border:1px solid rgba(255,255,255,0.3);" +
+    "}" +
+    "#__imgc_overlay{" +
       "position:fixed;z-index:2147483646;pointer-events:none;" +
-      "background:rgba(26,115,232,0.15);" +
-      "outline:2px solid rgba(26,115,232,0.55);" +
-      "display:none;" +
-      "box-shadow:0 0 0 4px rgba(26,115,232,0.08);" +
+      "background:rgba(26,115,232,0.12);" +
+      "outline:2px solid rgba(26,115,232,0.6);" +
+      "display:none;transition:all 80ms ease-out;" +
+      "box-shadow:0 0 0 4px rgba(26,115,232,0.06);border-radius:2px;" +
+    "}" +
+    "#__imgc_tooltip{" +
+      "position:fixed;z-index:2147483647;pointer-events:none;display:none;" +
+      "background:rgba(30,30,30,0.92);color:#fff;font-size:12px;" +
+      "font-family:system-ui,'Microsoft YaHei',sans-serif;" +
+      "padding:6px 10px;border-radius:4px;white-space:nowrap;" +
+      "box-shadow:0 2px 8px rgba(0,0,0,0.3);line-height:1.5;" +
+      "backdrop-filter:blur(4px);" +
+    "}" +
+    "#__imgc_tooltip .tag{color:#8be9fd;font-weight:600;}" +
+    "#__imgc_tooltip .dim{color:#ccc;margin-left:6px;}" +
+    "#__imgc_tooltip .hint{color:#ffd866;margin-left:6px;}" +
+    "#__imgc_rect{" +
+      "position:fixed;z-index:2147483645;pointer-events:none;display:none;" +
+      "outline:2px dashed rgba(255,152,0,0.9);" +
+      "background:rgba(255,152,0,0.1);" +
+      "box-shadow:0 0 0 4px rgba(255,152,0,0.05);" +
     "}";
   document.head.appendChild(style);
 
-  // --- 创建 UI ---
+  // ================================================================
+  // 创建 UI 元素
+  // ================================================================
   var banner = document.createElement("div");
-  banner.id = "__img_capture_banner";
-  banner.textContent = "\u{1F4F7} 元素捕捉模式 — 移动鼠标对准任意元素，单击保存为图片，Esc 退出";
+  banner.id = "__imgc_banner";
+  banner.innerHTML = '\u{1F4F7} <b>元素选择模式</b> — 移动鼠标选择元素，<kbd>滚轮</kbd> 切换层级，<kbd>R</kbd> 切换区域框选，<kbd>Esc</kbd> 退出';
 
   var overlay = document.createElement("div");
-  overlay.id = "__img_capture_overlay";
+  overlay.id = "__imgc_overlay";
+
+  var tooltip = document.createElement("div");
+  tooltip.id = "__imgc_tooltip";
+
+  var rectOverlay = document.createElement("div");
+  rectOverlay.id = "__imgc_rect";
 
   document.body.appendChild(banner);
   document.body.appendChild(overlay);
+  document.body.appendChild(tooltip);
+  document.body.appendChild(rectOverlay);
 
-  // --- 状态 ---
+  // ================================================================
+  // 状态
+  // ================================================================
   var hoveredEl = null;
   var overlayVisible = false;
+  var captureMode = "element";   // "element" | "area"
+  var dragging = false;
+  var dragStartX = 0, dragStartY = 0;
+  var dragCurX = 0, dragCurY = 0;
 
-  // --- 我们的元素 ID 集合 ---
-  var OUR_IDS = { "__img_capture_banner": true, "__img_capture_overlay": true };
+  var OUR_IDS = {};
+  IDS.forEach(function (id) { OUR_IDS[id] = true; });
+
+  // ---- 工具函数 ----
 
   function isOurUI(el) {
     for (var e = el; e; e = e.parentElement) {
@@ -437,8 +482,32 @@ function injectImageCapture(partNumber) {
     return false;
   }
 
-  // --- 核心：获取鼠标下方的真实页面元素 ---
-  // 先隐藏 overlay → elementsFromPoint → 取第一个真实元素 → 恢复 overlay
+  // 判断元素是否是"有意义的"选择目标（跳过太小的行内元素，优先选块级容器）
+  function getMeaningfulElement(el) {
+    if (!el) return null;
+    var tag = el.tagName;
+    var r = el.getBoundingClientRect();
+
+    // 如果当前元素很小（宽或高 < 20px）且有父元素更大，向上找
+    var cur = el;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      var cr = cur.getBoundingClientRect();
+      // 如果是块级或宽度超过 100px 或包含图片/列表项，认为有意义
+      var display = getComputedStyle(cur).display;
+      var isBlock = display === "block" || display === "flex" || display === "grid" ||
+                    display === "inline-block" || display === "inline-flex" || display === "table";
+      var hasContent = (cur.querySelector("img, svg, video, canvas"));
+      var isListOrCard = /^(LI|ARTICLE|SECTION|DIV|MAIN|ASIDE|HEADER|FOOTER|NAV|FIGURE|FORM)$/i.test(cur.tagName);
+
+      if (isBlock || isListOrCard || hasContent || cr.width >= 100 || cr.height >= 40) {
+        return cur;
+      }
+      cur = cur.parentElement;
+    }
+    return el;
+  }
+
+  // 隐藏 overlay → elementsFromPoint → 过滤 → 恢复 overlay
   function getElementAtPoint(x, y) {
     var wasShowing = overlayVisible;
     if (wasShowing) overlay.style.display = "none";
@@ -451,14 +520,16 @@ function injectImageCapture(partNumber) {
     for (var i = 0; i < all.length; i++) {
       var el = all[i];
       if (!el || el === document.body || el === document.documentElement) continue;
-      if (el.id === "__img_capture_banner" || el.id === "__img_capture_overlay") continue;
-      var r = el.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) return el;
+      if (OUR_IDS[el.id]) continue;
+      var rr = el.getBoundingClientRect();
+      if (rr.width > 0 && rr.height > 0) {
+        return getMeaningfulElement(el);
+      }
     }
     return null;
   }
 
-  // --- 显示 / 隐藏遮罩 ---
+  // 定位遮罩
   function showOverlay(el) {
     if (!el) {
       overlay.style.display = "none";
@@ -479,57 +550,284 @@ function injectImageCapture(partNumber) {
     overlayVisible = true;
   }
 
-  // --- 清理 ---
+  // 元素信息 tooltip（显示在遮罩下方或上方）
+  function showTooltip(el, mx, my) {
+    if (!el) {
+      tooltip.style.display = "none";
+      return;
+    }
+    var r = el.getBoundingClientRect();
+    var tag = el.tagName.toLowerCase();
+    var cls = el.className && typeof el.className === "string" ? el.className.trim().split(/\s+/).slice(0, 2).join(" ") : "";
+    if (el.id) cls = "#" + el.id + (cls ? " " + cls : "");
+    var dim = Math.round(r.width) + "×" + Math.round(r.height);
+
+    var html = '<span class="tag">' + escapeHtml2(tag) + '</span>';
+    if (cls) html += ' <span style="color:#aaa">' + escapeHtml2(cls) + '</span>';
+    html += '<span class="dim">' + dim + '</span>';
+
+    // 检查是否有子元素（提示可滚轮展开）
+    var children = el.children;
+    var hasChild = children && children.length > 0;
+    var hasParent = el.parentElement && el.parentElement !== document.body && el.parentElement !== document.documentElement;
+    var navHints = [];
+    if (hasParent) navHints.push('▲ 父');
+    if (hasChild) navHints.push('▼ 子');
+    if (navHints.length) html += '<span class="hint">' + navHints.join(" ") + '</span>';
+
+    tooltip.innerHTML = html;
+    tooltip.style.display = "";
+
+    // 定位：优先在遮罩下方，空间不够放上方
+    var tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+    var left = Math.max(4, Math.min(mx - tw / 2, window.innerWidth - tw - 4));
+    var top;
+    if (r.bottom + th + 6 <= window.innerHeight) {
+      top = r.bottom + 6;
+    } else if (r.top - th - 6 >= 0) {
+      top = r.top - th - 6;
+    } else {
+      top = Math.max(4, Math.min(my + 16, window.innerHeight - th - 4));
+    }
+    tooltip.style.left = left + "px";
+    tooltip.style.top = top + "px";
+  }
+
+  function escapeHtml2(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  // 滚轮 → 切换层级
+  function navigateHierarchy(deltaY) {
+    if (!hoveredEl) return;
+    if (deltaY < 0) {
+      // 上滚 → 选父元素
+      var p = hoveredEl.parentElement;
+      if (p && p !== document.body && p !== document.documentElement) {
+        hoveredEl = p;
+        showOverlay(p);
+        showTooltip(p, dragCurX || 0, dragCurY || 0);
+      }
+    } else if (deltaY > 0) {
+      // 下滚 → 选第一个可见子元素
+      var children = hoveredEl.children;
+      if (children && children.length > 0) {
+        for (var i = 0; i < children.length; i++) {
+          var cr = children[i].getBoundingClientRect();
+          if (cr.width > 0 && cr.height > 0) {
+            hoveredEl = children[i];
+            showOverlay(children[i]);
+            showTooltip(children[i], dragCurX || 0, dragCurY || 0);
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  // 更新矩形选区
+  function updateRectOverlay(x1, y1, x2, y2) {
+    var l = Math.min(x1, x2), t = Math.min(y1, y2);
+    var w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+    rectOverlay.style.display = "";
+    rectOverlay.style.left = l + "px";
+    rectOverlay.style.top = t + "px";
+    rectOverlay.style.width = w + "px";
+    rectOverlay.style.height = h + "px";
+  }
+
+  // 更新 banner 文案
+  function updateBanner() {
+    if (captureMode === "element") {
+      banner.innerHTML = '\u{1F4F7} <b>元素选择模式</b> — 移动鼠标选择元素，<kbd>滚轮</kbd> 切换层级，<kbd>R</kbd> 切换区域框选，<kbd>Esc</kbd> 退出';
+    } else {
+      banner.innerHTML = '✂️ <b>区域框选模式</b> — 按住鼠标左键拖拽框选矩形区域，<kbd>R</kbd> 切换元素选择，<kbd>Esc</kbd> 退出';
+    }
+    banner.style.background = captureMode === "area"
+      ? "linear-gradient(135deg,#e67e00,#d35400)"
+      : "linear-gradient(135deg,#1a73e8,#1557b0)";
+  }
+
+  // ---- 清理 ----
   function cleanup() {
     if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
     try { document.body.removeChild(banner); } catch (e) {}
     try { document.body.removeChild(overlay); } catch (e) {}
+    try { document.body.removeChild(tooltip); } catch (e) {}
+    try { document.body.removeChild(rectOverlay); } catch (e) {}
     try { document.head.removeChild(style); } catch (e) {}
     document.removeEventListener("mousemove", onMouseMove, true);
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("keydown", onKeyDown, true);
+    document.removeEventListener("mousedown", onMouseDown, true);
+    document.removeEventListener("mouseup", onMouseUp, true);
+    document.removeEventListener("wheel", onWheel, true);
+    document.removeEventListener("contextmenu", onContextMenu, true);
   }
 
-  // --- mousemove: 鼠标移到哪，遮罩跟到哪 ---
+  // ================================================================
+  // 事件处理器
+  // ================================================================
+
   function onMouseMove(e) {
     if (window.__img_capture_gen !== currentGen) return;
+    dragCurX = e.clientX;
+    dragCurY = e.clientY;
+
+    if (captureMode === "area" && dragging) {
+      // 区域拖拽中：更新矩形
+      updateRectOverlay(dragStartX, dragStartY, e.clientX, e.clientY);
+      // 同时更新尺寸 tooltip
+      var w = Math.abs(e.clientX - dragStartX);
+      var h = Math.abs(e.clientY - dragStartY);
+      tooltip.innerHTML = '<span class="tag">自定义区域</span><span class="dim">' + Math.round(w) + '×' + Math.round(h) + '</span>';
+      tooltip.style.display = "";
+      var l = Math.min(dragStartX, e.clientX);
+      var t = Math.max(dragStartY, e.clientY) + 6;
+      tooltip.style.left = Math.max(4, Math.min(l, window.innerWidth - tooltip.offsetWidth - 4)) + "px";
+      tooltip.style.top = Math.min(t, window.innerHeight - tooltip.offsetHeight - 4) + "px";
+      return;
+    }
+
+    if (captureMode !== "element") return;
+
     var el = getElementAtPoint(e.clientX, e.clientY);
     if (el) {
       hoveredEl = el;
       showOverlay(el);
+      showTooltip(el, e.clientX, e.clientY);
     }
   }
 
-  // --- click: 点击选中元素 → 截图保存 ---
   function onClick(e) {
     if (window.__img_capture_gen !== currentGen) return;
-    if (!hoveredEl) return;
+
+    if (captureMode === "element") {
+      if (!hoveredEl) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+
+      // 闪烁确认
+      overlay.style.background = "rgba(26,115,232,0.35)";
+      overlay.style.outline = "3px solid rgba(26,115,232,0.85)";
+      overlay.style.boxShadow = "0 0 0 8px rgba(26,115,232,0.2)";
+
+      var el = hoveredEl;
+      setTimeout(function () { captureElement(el); }, 120);
+    }
+  }
+
+  function onMouseDown(e) {
+    if (window.__img_capture_gen !== currentGen) return;
+    if (captureMode !== "area") return;
+    if (e.button !== 0) return; // 只响应左键
 
     e.preventDefault();
     e.stopPropagation();
-    e.stopImmediatePropagation();
-
-    // 闪烁确认
-    overlay.style.background = "rgba(26,115,232,0.35)";
-    overlay.style.outline = "3px solid rgba(26,115,232,0.85)";
-    overlay.style.boxShadow = "0 0 0 6px rgba(26,115,232,0.18)";
-
-    var el = hoveredEl;
-    setTimeout(function () { captureAndSave(el); }, 120);
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    // 隐藏元素遮罩，显示矩形框
+    overlay.style.display = "none";
+    overlayVisible = false;
+    tooltip.style.display = "none";
   }
 
-  // --- keydown: Esc 退出 ---
+  function onMouseUp(e) {
+    if (window.__img_capture_gen !== currentGen) return;
+    if (captureMode !== "area" || !dragging) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = false;
+
+    var x1 = dragStartX, y1 = dragStartY;
+    var x2 = e.clientX, y2 = e.clientY;
+    var w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+
+    // 太小忽略（防止误触）
+    if (w < 10 || h < 10) {
+      rectOverlay.style.display = "none";
+      tooltip.style.display = "none";
+      return;
+    }
+
+    // 闪烁确认
+    rectOverlay.style.outline = "3px solid rgba(255,152,0,1)";
+    rectOverlay.style.background = "rgba(255,152,0,0.25)";
+
+    var rect = {
+      left: Math.min(x1, x2),
+      top: Math.min(y1, y2),
+      width: w,
+      height: h
+    };
+
+    setTimeout(function () { captureArea(rect); }, 120);
+  }
+
+  function onWheel(e) {
+    if (window.__img_capture_gen !== currentGen) return;
+    if (captureMode !== "element") return;
+    e.preventDefault();
+    e.stopPropagation();
+    navigateHierarchy(e.deltaY);
+  }
+
+  function onContextMenu(e) {
+    // 捕捉状态下阻止右键菜单
+    if (window.__img_capture_gen !== currentGen) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
   function onKeyDown(e) {
     if (window.__img_capture_gen !== currentGen) return;
+
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
       cleanup();
+      return;
+    }
+
+    if (e.key === "r" || e.key === "R") {
+      e.preventDefault();
+      e.stopPropagation();
+      // 切换模式
+      if (captureMode === "element") {
+        captureMode = "area";
+        overlay.style.display = "none";
+        overlayVisible = false;
+        tooltip.style.display = "none";
+        hoveredEl = null;
+      } else {
+        captureMode = "element";
+        rectOverlay.style.display = "none";
+        tooltip.style.display = "none";
+      }
+      updateBanner();
+      return;
+    }
+
+    // 元素模式下的键盘层级导航
+    if (captureMode === "element") {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        navigateHierarchy(-1);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        navigateHierarchy(1);
+      }
     }
   }
 
-  // --- 截图 & 下载（全部统一为 PNG 格式） ---
+  // ================================================================
+  // 截图 & 保存
+  // ================================================================
 
+  // SVG foreignObject 方式渲染元素
   function captureElementAsImage(el) {
     return new Promise(function (resolve, reject) {
       var rect = el.getBoundingClientRect();
@@ -542,20 +840,18 @@ function injectImageCapture(partNumber) {
 
       var computed = getComputedStyle(el);
       var styleProps = [
-        "color","background-color","font-family","font-size","font-weight","font-style",
+        "color","background-color","background-image","font-family","font-size","font-weight","font-style",
         "text-align","text-decoration","line-height","letter-spacing",
         "padding-left","padding-right","padding-top","padding-bottom",
-        "margin-left","margin-right","margin-top","margin-bottom",
-        "border-left","border-right","border-top","border-bottom","border-radius",
-        "display","overflow","white-space","word-break","opacity",
-        "width","height","max-width","max-height"
+        "border","border-radius","box-shadow",
+        "display","overflow","white-space","word-break","opacity"
       ];
       var cssText = "";
       for (var i = 0; i < styleProps.length; i++) {
         var p = styleProps[i];
         var v = computed.getPropertyValue(p);
         if (v && v !== "none" && v !== "normal" && v !== "auto" &&
-            v !== "rgba(0, 0, 0, 0)" && v !== "transparent" && v !== "0px") {
+            v !== "rgba(0, 0, 0, 0)" && v !== "transparent") {
           cssText += p + ":" + v + ";";
         }
       }
@@ -564,7 +860,7 @@ function injectImageCapture(partNumber) {
       var html = clone.outerHTML || el.outerHTML || el.innerHTML;
       var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fw + '" height="' + fh + '">' +
         '<foreignObject width="100%" height="100%">' +
-        '<div xmlns="http://www.w3.org/1999/xhtml" style="' + cssText + 'width:' + w + 'px;height:' + h + 'px;overflow:hidden;">' +
+        '<div xmlns="http://www.w3.org/1999/xhtml" style="' + cssText + 'width:' + w + 'px;min-height:' + h + 'px;overflow:hidden;">' +
         html + '</div></foreignObject></svg>';
 
       var blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
@@ -585,9 +881,106 @@ function injectImageCapture(partNumber) {
     });
   }
 
-  async function captureAndSave(el) {
+  // 区域截图：截取屏幕指定区域（viewport 坐标）
+  function captureAreaRect(areaRect) {
+    return new Promise(function (resolve, reject) {
+      var l = areaRect.left, t = areaRect.top;
+      var w = areaRect.width, h = areaRect.height;
+
+      if (w <= 0 || h <= 0) return reject(new Error("zero size area"));
+
+      // 策略：找出该区域中包含的所有可见元素，渲染到 canvas
+      // 简化但有效的方案：使用整个 body 的 SVG 渲染，但裁剪到区域
+      var maxD = 3000;
+      var scale = Math.min(1, maxD / Math.max(w, h));
+      var fw = Math.round(w * scale), fh = Math.round(h * scale);
+
+      // 收集区域内的主要内容
+      var cloneContainer = document.createElement("div");
+      cloneContainer.style.cssText = "position:relative;width:" + document.documentElement.scrollWidth + "px;";
+
+      // 遍历区域内的可见元素
+      var allEls = document.querySelectorAll("body *");
+      var areaElements = [];
+      for (var i = 0; i < allEls.length; i++) {
+        var el = allEls[i];
+        if (OUR_IDS[el.id]) continue;
+        var rr = el.getBoundingClientRect();
+        // 检查是否与区域相交
+        if (rr.right < l || rr.left > l + w || rr.bottom < t || rr.top > t + h) continue;
+        if (rr.width <= 0 || rr.height <= 0) continue;
+        // 只取叶子节点或包含图片的元素
+        var tag = el.tagName;
+        if (tag === "IMG" || tag === "CANVAS" || tag === "VIDEO" || tag === "SVG" ||
+            (el.children.length === 0 && (el.textContent || "").trim().length > 0) ||
+            tag === "BUTTON" || tag === "INPUT" || tag === "SELECT") {
+          areaElements.push({ el: el, rect: rr, tag: tag });
+        }
+      }
+
+      // 如果区域内元素较少，直接用简化方式
+      if (areaElements.length <= 50) {
+        // 用 SVG foreignObject 渲染整个 body，然后裁剪
+        var bodyClone = document.body.cloneNode(true);
+        // 移除我们的 UI
+        IDS.forEach(function (id) {
+          try { var rmv = bodyClone.querySelector("#" + id); if (rmv) rmv.remove(); } catch (e2) {}
+        });
+
+        var bodyHtml = bodyClone.innerHTML || "";
+        var svg2 = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fw + '" height="' + fh + '">' +
+          '<foreignObject width="100%" height="100%">' +
+          '<div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:' + document.documentElement.scrollWidth + 'px;">' +
+          bodyHtml + '</div></foreignObject></svg>';
+
+        // 创建一个带 viewBox 偏移的 SVG 来裁剪到目标区域
+        var svgCrop = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fw + '" height="' + fh + '" viewBox="' + l + ' ' + t + ' ' + w + ' ' + h + '">' +
+          '<foreignObject x="' + l + '" y="' + t + '" width="' + w + '" height="' + h + '">' +
+          '<div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:' + w + 'px;height:' + h + 'px;overflow:hidden;">' +
+          bodyHtml + '</div></foreignObject></svg>';
+
+        var blob2 = new Blob([svgCrop], { type: "image/svg+xml;charset=utf-8" });
+        var url2 = URL.createObjectURL(blob2);
+        var img2 = new Image();
+        img2.onload = function () {
+          URL.revokeObjectURL(url2);
+          var cv2 = document.createElement("canvas");
+          cv2.width = fw; cv2.height = fh;
+          cv2.getContext("2d").drawImage(img2, 0, 0, fw, fh);
+          resolve(cv2.toDataURL("image/png", 0.95));
+        };
+        img2.onerror = function () {
+          URL.revokeObjectURL(url2);
+          // 降级：纯色画布 + 尺寸标注
+          var fb = document.createElement("canvas");
+          fb.width = fw; fb.height = fh;
+          var ctx = fb.getContext("2d");
+          ctx.fillStyle = "#f5f5f5"; ctx.fillRect(0, 0, fw, fh);
+          ctx.fillStyle = "#999"; ctx.font = "14px system-ui,sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(w + "×" + h + " 区域截图", fw / 2, fh / 2);
+          resolve(fb.toDataURL("image/png", 0.95));
+        };
+        img2.src = url2;
+      } else {
+        // 复杂区域：白底 + 尺寸
+        var fb2 = document.createElement("canvas");
+        fb2.width = fw; fb2.height = fh;
+        var ctx2 = fb2.getContext("2d");
+        ctx2.fillStyle = "#f5f5f5"; ctx2.fillRect(0, 0, fw, fh);
+        ctx2.fillStyle = "#666"; ctx2.font = "14px system-ui,sans-serif";
+        ctx2.textAlign = "center";
+        ctx2.fillText("已选择 " + w + "×" + h + " 区域", fw / 2, fh / 2);
+        resolve(fb2.toDataURL("image/png", 0.95));
+      }
+    });
+  }
+
+  // ---- 元素截图入口 ----
+  async function captureElement(el) {
     overlay.style.display = "none";
     overlayVisible = false;
+    tooltip.style.display = "none";
 
     var tag = el.tagName;
     var r = el.getBoundingClientRect();
@@ -596,14 +989,12 @@ function injectImageCapture(partNumber) {
     try {
       if (tag === "IMG") {
         var srcUrl = el.src;
-        // 尝试直接绘制（同源图片）
         try {
           var cv1 = document.createElement("canvas");
           cv1.width = el.naturalWidth; cv1.height = el.naturalHeight;
           cv1.getContext("2d").drawImage(el, 0, 0);
           downloadUrl = cv1.toDataURL("image/png", 0.95);
         } catch (directErr) {
-          // 跨域图片：通过新建 Image 带 CORS 重新加载，再绘制为 PNG
           try {
             downloadUrl = await new Promise(function (resolve, reject) {
               var tmpImg = new Image();
@@ -618,12 +1009,11 @@ function injectImageCapture(partNumber) {
               tmpImg.src = srcUrl;
             });
           } catch (reloadErr) {
-            // 彻底失败：用 SVG foreignObject 渲染（跨域图可能空白但不会保留原始格式）
             downloadUrl = await captureElementAsImage(el);
           }
         }
       } else if (tag === "CANVAS") {
-        try { downloadUrl = el.toDataURL("image/png"); } catch (e) {}
+        try { downloadUrl = el.toDataURL("image/png"); } catch (e3) {}
       } else if (tag === "VIDEO") {
         var vw = el.videoWidth || r.width, vh = el.videoHeight || r.height;
         var cv2 = document.createElement("canvas");
@@ -656,19 +1046,42 @@ function injectImageCapture(partNumber) {
       }
 
       if (downloadUrl) {
-        try { chrome.runtime.sendMessage({ action: "downloadImage", url: downloadUrl, filename: partNumber + ".png" }); } catch (e) {}
+        try { chrome.runtime.sendMessage({ action: "downloadImage", url: downloadUrl, filename: partNumber + ".png" }); } catch (e4) {}
       }
       window.__img_capture_timer = setTimeout(cleanup, 300);
     } catch (err) {
-      console.error("captureAndSave:", err);
+      console.error("captureElement:", err);
       cleanup();
     }
   }
 
-  // --- 启动事件监听 ---
+  // ---- 区域截图入口 ----
+  async function captureArea(rect) {
+    rectOverlay.style.display = "none";
+    tooltip.style.display = "none";
+
+    try {
+      var downloadUrl = await captureAreaRect(rect);
+      if (downloadUrl) {
+        try { chrome.runtime.sendMessage({ action: "downloadImage", url: downloadUrl, filename: partNumber + "_area.png" }); } catch (e5) {}
+      }
+      window.__img_capture_timer = setTimeout(cleanup, 300);
+    } catch (err) {
+      console.error("captureArea:", err);
+      cleanup();
+    }
+  }
+
+  // ================================================================
+  // 启动事件监听
+  // ================================================================
   document.addEventListener("mousemove", onMouseMove, true);
   document.addEventListener("click", onClick, true);
   document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("mousedown", onMouseDown, true);
+  document.addEventListener("mouseup", onMouseUp, true);
+  document.addEventListener("wheel", onWheel, { passive: false, capture: true });
+  document.addEventListener("contextmenu", onContextMenu, true);
 }
 
 // 定期刷新
