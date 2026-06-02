@@ -349,28 +349,55 @@ async function startImageCapture() {
   const btn = document.getElementById("captureBtn");
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) return;
+    if (!tab) { console.error("[截图捕获] 无法获取当前标签页"); return; }
 
     // 检查是否为受限页面（chrome://, chrome-extension:// 等无法注入脚本）
-    if (tab.url && (tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://") || tab.url.startsWith("about:"))) {
+    if (tab.url && (tab.url.startsWith("chrome://") || tab.url.startsWith("edge://") || tab.url.startsWith("chrome-extension://") || tab.url.startsWith("about:") || tab.url.startsWith("edge-extension://"))) {
       btn.querySelector("span:last-child").textContent = "此页面不支持";
       setTimeout(() => { btn.querySelector("span:last-child").textContent = "保存截图"; }, 2000);
       return;
     }
 
     // 获取当前料号作为文件名
+    // 修正 Bug 1：只有当活跃标签页属于当前群组时才使用群组的 partNumber，
+    // 否则从页面 URL 提取文件名，避免复用上次批量打开的旧名字
     const data = await chrome.storage.local.get("currentGroup");
-    let partNumber = data.currentGroup?.partNumber || "capture";
+    let partNumber = "capture";
+    if (data.currentGroup && data.currentGroup.tabIds && data.currentGroup.tabIds.includes(tab.id)) {
+      partNumber = data.currentGroup.partNumber || "capture";
+    } else {
+      // 不是批量打开的标签页，从 URL 提取有意义的文件名
+      try {
+        const url = new URL(tab.url);
+        const pathParts = url.pathname.split("/").filter(Boolean);
+        const lastPath = pathParts.length > 0 ? pathParts[pathParts.length - 1] : "";
+        // 如果最后一段路径像文件名，使用它；否则用 hostname
+        if (lastPath && /\.[a-z0-9]+$/i.test(lastPath)) {
+          partNumber = lastPath.replace(/\.[^.]+$/, "").replace(/[<>:"/\|?*]/g, "_") || "capture";
+        } else {
+          partNumber = url.hostname.replace(/^www\./, "").replace(/[<>:"/\|?*]/g, "_") || "capture";
+        }
+      } catch (e) {
+        partNumber = "capture";
+      }
+    }
     // 去除料号中的空格
     partNumber = partNumber.replace(/\s+/g, "");
 
-    await chrome.scripting.executeScript({
+    console.log("[截图捕获] 正在注入到标签页", tab.id, tab.url, "partNumber:", partNumber);
+    const injectResult = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: injectImageCapture,
       args: [partNumber],
     });
+    if (chrome.runtime.lastError) {
+      console.error("[截图捕获] 注入错误:", chrome.runtime.lastError.message);
+      throw new Error(chrome.runtime.lastError.message);
+    }
+    console.log("[截图捕获] 注入完成, result:", injectResult);
   } catch (e) {
     console.error("startImageCapture error:", e);
+    console.error("[截图捕获] startImageCapture error:", e);
     btn.querySelector("span:last-child").textContent = "注入失败";
     setTimeout(() => { btn.querySelector("span:last-child").textContent = "保存截图"; }, 2000);
   }
@@ -384,704 +411,352 @@ async function startImageCapture() {
 //   Esc 退出
 // ============================================================
 function injectImageCapture(partNumber) {
-  // --- 清理上一次残留 ---
-  if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
-  var IDS = ["__imgc_banner", "__imgc_overlay", "__imgc_tooltip", "__imgc_rect", "__imgc_style"];
-  IDS.forEach(function (id) {
-    try { var old = document.getElementById(id); if (old) old.remove(); } catch (e) {}
-  });
+  console.log("[截图捕获] 开始注入, partNumber:", partNumber);
+  try {
+    // --- 清理上一次残留 ---
+    if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
+    var IDS = ["__imgc_banner", "__imgc_style"];
+    IDS.forEach(function (id) {
+      try { var old = document.getElementById(id); if (old) old.remove(); } catch (e) {}
+    });
 
-  // --- 代数标记 ---
-  window.__img_capture_gen = (window.__img_capture_gen || 0) + 1;
-  var currentGen = window.__img_capture_gen;
+    // --- 代数标记 ---
+    window.__img_capture_gen = (window.__img_capture_gen || 0) + 1;
+    var currentGen = window.__img_capture_gen;
 
-  // ================================================================
-  // 注入样式
-  // ================================================================
-  var style = document.createElement("style");
-  style.id = "__imgc_style";
-  style.textContent =
-    "#__imgc_banner{" +
-      "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
-      "padding:10px 16px;text-align:center;pointer-events:none;" +
-      "background:linear-gradient(135deg,#1a73e8,#1557b0);color:#fff;font-size:13px;" +
-      "font-family:system-ui,'Microsoft YaHei',sans-serif;" +
-      "box-shadow:0 2px 12px rgba(0,0,0,0.25);line-height:1.5;" +
-    "}" +
-    "#__imgc_banner kbd{" +
-      "display:inline-block;padding:1px 6px;margin:0 2px;" +
-      "background:rgba(255,255,255,0.2);border-radius:3px;" +
-      "font-size:12px;font-family:monospace;border:1px solid rgba(255,255,255,0.3);" +
-    "}" +
-    "#__imgc_overlay{" +
-      "position:fixed;z-index:2147483646;pointer-events:none;" +
-      "background:rgba(26,115,232,0.12);" +
-      "outline:2px solid rgba(26,115,232,0.6);" +
-      "display:none;transition:all 80ms ease-out;" +
-      "box-shadow:0 0 0 4px rgba(26,115,232,0.06);border-radius:2px;" +
-    "}" +
-    "#__imgc_tooltip{" +
-      "position:fixed;z-index:2147483647;pointer-events:none;display:none;" +
-      "background:rgba(30,30,30,0.92);color:#fff;font-size:12px;" +
-      "font-family:system-ui,'Microsoft YaHei',sans-serif;" +
-      "padding:6px 10px;border-radius:4px;white-space:nowrap;" +
-      "box-shadow:0 2px 8px rgba(0,0,0,0.3);line-height:1.5;" +
-      "backdrop-filter:blur(4px);" +
-    "}" +
-    "#__imgc_tooltip .tag{color:#8be9fd;font-weight:600;}" +
-    "#__imgc_tooltip .dim{color:#ccc;margin-left:6px;}" +
-    "#__imgc_tooltip .hint{color:#ffd866;margin-left:6px;}" +
-    "#__imgc_rect{" +
-      "position:fixed;z-index:2147483645;pointer-events:none;display:none;" +
-      "outline:2px dashed rgba(255,152,0,0.9);" +
-      "background:rgba(255,152,0,0.1);" +
-      "box-shadow:0 0 0 4px rgba(255,152,0,0.05);" +
-    "}";
-  document.head.appendChild(style);
+    // ================================================================
+    // 注入样式（仅 banner）
+    // ================================================================
+    var style = document.createElement("style");
+    style.id = "__imgc_style";
+    style.textContent =
+      "#__imgc_banner{" +
+        "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
+        "padding:10px 16px;text-align:center;pointer-events:none;" +
+        "background:linear-gradient(135deg,#1a73e8,#1557b0);color:#fff;font-size:13px;" +
+        "font-family:system-ui,'Microsoft YaHei',sans-serif;" +
+        "box-shadow:0 2px 12px rgba(0,0,0,0.25);line-height:1.5;" +
+      "}" +
+      "#__imgc_banner kbd{" +
+        "display:inline-block;padding:1px 6px;margin:0 2px;" +
+        "background:rgba(255,255,255,0.2);border-radius:3px;" +
+        "font-size:12px;font-family:monospace;border:1px solid rgba(255,255,255,0.3);" +
+      "}";
+    document.head.appendChild(style);
 
-  // ================================================================
-  // 创建 UI 元素
-  // ================================================================
-  var banner = document.createElement("div");
-  banner.id = "__imgc_banner";
-  banner.innerHTML = '\u{1F4F7} <b>元素选择模式</b> — 移动鼠标选择元素，<kbd>滚轮</kbd> 切换层级，<kbd>R</kbd> 切换区域框选，<kbd>Esc</kbd> 退出';
+    // ================================================================
+    // 创建 UI（仅 banner）
+    // ================================================================
+    var banner = document.createElement("div");
+    banner.id = "__imgc_banner";
+    banner.innerHTML = '📷 <b>截图模式</b> — <kbd>单击</kbd> 保存光标处元素 &nbsp;|&nbsp; <kbd>Esc</kbd> 退出';
 
-  var overlay = document.createElement("div");
-  overlay.id = "__imgc_overlay";
+    document.body.appendChild(banner);
 
-  var tooltip = document.createElement("div");
-  tooltip.id = "__imgc_tooltip";
+    // ================================================================
+    // 状态
+    // ================================================================
+    var hoveredEl = null;
+    var OUR_IDS = {};
+    IDS.forEach(function (id) { OUR_IDS[id] = true; });
 
-  var rectOverlay = document.createElement("div");
-  rectOverlay.id = "__imgc_rect";
+    // ---- 工具函数 ----
 
-  document.body.appendChild(banner);
-  document.body.appendChild(overlay);
-  document.body.appendChild(tooltip);
-  document.body.appendChild(rectOverlay);
-
-  // ================================================================
-  // 状态
-  // ================================================================
-  var hoveredEl = null;
-  var overlayVisible = false;
-  var captureMode = "element";   // "element" | "area"
-  var dragging = false;
-  var dragStartX = 0, dragStartY = 0;
-  var dragCurX = 0, dragCurY = 0;
-
-  var OUR_IDS = {};
-  IDS.forEach(function (id) { OUR_IDS[id] = true; });
-
-  // ---- 工具函数 ----
-
-  function isOurUI(el) {
-    for (var e = el; e; e = e.parentElement) {
-      if (OUR_IDS[e.id]) return true;
-    }
-    return false;
-  }
-
-  // 判断元素是否是"有意义的"选择目标（跳过太小的行内元素，优先选块级容器）
-  function getMeaningfulElement(el) {
-    if (!el) return null;
-    var tag = el.tagName;
-    var r = el.getBoundingClientRect();
-
-    // 如果当前元素很小（宽或高 < 20px）且有父元素更大，向上找
-    var cur = el;
-    while (cur && cur !== document.body && cur !== document.documentElement) {
-      var cr = cur.getBoundingClientRect();
-      // 如果是块级或宽度超过 100px 或包含图片/列表项，认为有意义
-      var display = getComputedStyle(cur).display;
-      var isBlock = display === "block" || display === "flex" || display === "grid" ||
-                    display === "inline-block" || display === "inline-flex" || display === "table";
-      var hasContent = (cur.querySelector("img, svg, video, canvas"));
-      var isListOrCard = /^(LI|ARTICLE|SECTION|DIV|MAIN|ASIDE|HEADER|FOOTER|NAV|FIGURE|FORM)$/i.test(cur.tagName);
-
-      if (isBlock || isListOrCard || hasContent || cr.width >= 100 || cr.height >= 40) {
-        return cur;
+    function isOurUI(el) {
+      for (var e = el; e; e = e.parentElement) {
+        if (OUR_IDS[e.id]) return true;
       }
-      cur = cur.parentElement;
+      return false;
     }
-    return el;
-  }
 
-  // 隐藏 overlay → elementsFromPoint → 过滤 → 恢复 overlay
-  function getElementAtPoint(x, y) {
-    var wasShowing = overlayVisible;
-    if (wasShowing) overlay.style.display = "none";
+    // 修正 Bug 2：优先返回媒体元素，解决放大镜/缩放图片无法捕获的问题
+    function getMeaningfulElement(el) {
+      if (!el) return null;
+      var tag = el.tagName;
+      var r = el.getBoundingClientRect();
 
-    var all = document.elementsFromPoint(x, y);
-
-    if (wasShowing) overlay.style.display = "";
-
-    if (!all || all.length === 0) return null;
-    for (var i = 0; i < all.length; i++) {
-      var el = all[i];
-      if (!el || el === document.body || el === document.documentElement) continue;
-      if (OUR_IDS[el.id]) continue;
-      var rr = el.getBoundingClientRect();
-      if (rr.width > 0 && rr.height > 0) {
-        return getMeaningfulElement(el);
+      if (/^(IMG|VIDEO|CANVAS|SVG)$/i.test(tag) && r.width >= 20 && r.height >= 20) {
+        return el;
       }
-    }
-    return null;
-  }
 
-  // 定位遮罩
-  function showOverlay(el) {
-    if (!el) {
-      overlay.style.display = "none";
-      overlayVisible = false;
-      return;
-    }
-    var r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) {
-      overlay.style.display = "none";
-      overlayVisible = false;
-      return;
-    }
-    overlay.style.display = "";
-    overlay.style.left = r.left + "px";
-    overlay.style.top = r.top + "px";
-    overlay.style.width = r.width + "px";
-    overlay.style.height = r.height + "px";
-    overlayVisible = true;
-  }
+      var cur = el;
+      while (cur && cur !== document.body && cur !== document.documentElement) {
+        var cr = cur.getBoundingClientRect();
+        var display = getComputedStyle(cur).display;
+        var isBlock = display === "block" || display === "flex" || display === "grid" ||
+                      display === "inline-block" || display === "inline-flex" || display === "table";
+        var hasContent = (cur.querySelector("img, svg, video, canvas"));
+        var isListOrCard = /^(LI|ARTICLE|SECTION|DIV|MAIN|ASIDE|HEADER|FOOTER|NAV|FIGURE|FORM)$/i.test(cur.tagName);
 
-  // 元素信息 tooltip（显示在遮罩下方或上方）
-  function showTooltip(el, mx, my) {
-    if (!el) {
-      tooltip.style.display = "none";
-      return;
-    }
-    var r = el.getBoundingClientRect();
-    var tag = el.tagName.toLowerCase();
-    var cls = el.className && typeof el.className === "string" ? el.className.trim().split(/\s+/).slice(0, 2).join(" ") : "";
-    if (el.id) cls = "#" + el.id + (cls ? " " + cls : "");
-    var dim = Math.round(r.width) + "×" + Math.round(r.height);
-
-    var html = '<span class="tag">' + escapeHtml2(tag) + '</span>';
-    if (cls) html += ' <span style="color:#aaa">' + escapeHtml2(cls) + '</span>';
-    html += '<span class="dim">' + dim + '</span>';
-
-    // 检查是否有子元素（提示可滚轮展开）
-    var children = el.children;
-    var hasChild = children && children.length > 0;
-    var hasParent = el.parentElement && el.parentElement !== document.body && el.parentElement !== document.documentElement;
-    var navHints = [];
-    if (hasParent) navHints.push('▲ 父');
-    if (hasChild) navHints.push('▼ 子');
-    if (navHints.length) html += '<span class="hint">' + navHints.join(" ") + '</span>';
-
-    tooltip.innerHTML = html;
-    tooltip.style.display = "";
-
-    // 定位：优先在遮罩下方，空间不够放上方
-    var tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-    var left = Math.max(4, Math.min(mx - tw / 2, window.innerWidth - tw - 4));
-    var top;
-    if (r.bottom + th + 6 <= window.innerHeight) {
-      top = r.bottom + 6;
-    } else if (r.top - th - 6 >= 0) {
-      top = r.top - th - 6;
-    } else {
-      top = Math.max(4, Math.min(my + 16, window.innerHeight - th - 4));
-    }
-    tooltip.style.left = left + "px";
-    tooltip.style.top = top + "px";
-  }
-
-  function escapeHtml2(s) {
-    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
-
-  // 滚轮 → 切换层级
-  function navigateHierarchy(deltaY) {
-    if (!hoveredEl) return;
-    if (deltaY < 0) {
-      // 上滚 → 选父元素
-      var p = hoveredEl.parentElement;
-      if (p && p !== document.body && p !== document.documentElement) {
-        hoveredEl = p;
-        showOverlay(p);
-        showTooltip(p, dragCurX || 0, dragCurY || 0);
+        if (isBlock || isListOrCard || hasContent || cr.width >= 100 || cr.height >= 40) {
+          var curTag = cur.tagName;
+          if (!/^(IMG|VIDEO|CANVAS|SVG)$/i.test(curTag)) {
+            var imgs = cur.querySelectorAll("img, video, canvas");
+            if (imgs.length === 1) {
+              var ir = imgs[0].getBoundingClientRect();
+              if (ir.width >= 20 && ir.height >= 20) {
+                return imgs[0];
+              }
+            }
+          }
+          return cur;
+        }
+        cur = cur.parentElement;
       }
-    } else if (deltaY > 0) {
-      // 下滚 → 选第一个可见子元素
-      var children = hoveredEl.children;
-      if (children && children.length > 0) {
-        for (var i = 0; i < children.length; i++) {
-          var cr = children[i].getBoundingClientRect();
-          if (cr.width > 0 && cr.height > 0) {
-            hoveredEl = children[i];
-            showOverlay(children[i]);
-            showTooltip(children[i], dragCurX || 0, dragCurY || 0);
-            return;
+      return el;
+    }
+
+    // 修正 Bug 2：两遍扫描 — 第一遍优先找媒体元素
+    function getElementAtPoint(x, y) {
+      var all = document.elementsFromPoint(x, y);
+      if (!all || all.length === 0) return null;
+
+      // 第一遍：优先找媒体元素
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (!el || el === document.body || el === document.documentElement) continue;
+        if (OUR_IDS[el.id]) continue;
+        if (/^(IMG|VIDEO|CANVAS)$/i.test(el.tagName)) {
+          var rr = el.getBoundingClientRect();
+          if (rr.width >= 20 && rr.height >= 20) {
+            return el;
           }
         }
       }
-    }
-  }
 
-  // 更新矩形选区
-  function updateRectOverlay(x1, y1, x2, y2) {
-    var l = Math.min(x1, x2), t = Math.min(y1, y2);
-    var w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
-    rectOverlay.style.display = "";
-    rectOverlay.style.left = l + "px";
-    rectOverlay.style.top = t + "px";
-    rectOverlay.style.width = w + "px";
-    rectOverlay.style.height = h + "px";
-  }
-
-  // 更新 banner 文案
-  function updateBanner() {
-    if (captureMode === "element") {
-      banner.innerHTML = '\u{1F4F7} <b>元素选择模式</b> — 移动鼠标选择元素，<kbd>滚轮</kbd> 切换层级，<kbd>R</kbd> 切换区域框选，<kbd>Esc</kbd> 退出';
-    } else {
-      banner.innerHTML = '✂️ <b>区域框选模式</b> — 按住鼠标左键拖拽框选矩形区域，<kbd>R</kbd> 切换元素选择，<kbd>Esc</kbd> 退出';
-    }
-    banner.style.background = captureMode === "area"
-      ? "linear-gradient(135deg,#e67e00,#d35400)"
-      : "linear-gradient(135deg,#1a73e8,#1557b0)";
-  }
-
-  // ---- 清理 ----
-  function cleanup() {
-    if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
-    try { document.body.removeChild(banner); } catch (e) {}
-    try { document.body.removeChild(overlay); } catch (e) {}
-    try { document.body.removeChild(tooltip); } catch (e) {}
-    try { document.body.removeChild(rectOverlay); } catch (e) {}
-    try { document.head.removeChild(style); } catch (e) {}
-    document.removeEventListener("mousemove", onMouseMove, true);
-    document.removeEventListener("click", onClick, true);
-    document.removeEventListener("keydown", onKeyDown, true);
-    document.removeEventListener("mousedown", onMouseDown, true);
-    document.removeEventListener("mouseup", onMouseUp, true);
-    document.removeEventListener("wheel", onWheel, true);
-    document.removeEventListener("contextmenu", onContextMenu, true);
-  }
-
-  // ================================================================
-  // 事件处理器
-  // ================================================================
-
-  function onMouseMove(e) {
-    if (window.__img_capture_gen !== currentGen) return;
-    dragCurX = e.clientX;
-    dragCurY = e.clientY;
-
-    if (captureMode === "area" && dragging) {
-      // 区域拖拽中：更新矩形
-      updateRectOverlay(dragStartX, dragStartY, e.clientX, e.clientY);
-      // 同时更新尺寸 tooltip
-      var w = Math.abs(e.clientX - dragStartX);
-      var h = Math.abs(e.clientY - dragStartY);
-      tooltip.innerHTML = '<span class="tag">自定义区域</span><span class="dim">' + Math.round(w) + '×' + Math.round(h) + '</span>';
-      tooltip.style.display = "";
-      var l = Math.min(dragStartX, e.clientX);
-      var t = Math.max(dragStartY, e.clientY) + 6;
-      tooltip.style.left = Math.max(4, Math.min(l, window.innerWidth - tooltip.offsetWidth - 4)) + "px";
-      tooltip.style.top = Math.min(t, window.innerHeight - tooltip.offsetHeight - 4) + "px";
-      return;
+      // 第二遍：常规元素查找
+      for (var j = 0; j < all.length; j++) {
+        var el2 = all[j];
+        if (!el2 || el2 === document.body || el2 === document.documentElement) continue;
+        if (OUR_IDS[el2.id]) continue;
+        var rr2 = el2.getBoundingClientRect();
+        if (rr2.width > 0 && rr2.height > 0) {
+          return getMeaningfulElement(el2);
+        }
+      }
+      return null;
     }
 
-    if (captureMode !== "element") return;
-
-    var el = getElementAtPoint(e.clientX, e.clientY);
-    if (el) {
-      hoveredEl = el;
-      showOverlay(el);
-      showTooltip(el, e.clientX, e.clientY);
+    // 修正 Bug 3：返回 rect 供复用
+    function showOverlay(el) {
+      return el ? el.getBoundingClientRect() : null;
     }
-  }
 
-  function onClick(e) {
-    if (window.__img_capture_gen !== currentGen) return;
+    function showTooltip(el, mx, my, cachedRect) {
+      // 已移除提示词
+    }
 
-    if (captureMode === "element") {
+    function escapeHtml2(s) {
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    // ---- 清理 ----
+    function cleanup() {
+      if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
+      try { document.body.removeChild(banner); } catch (e) {}
+      try { document.head.removeChild(style); } catch (e) {}
+      document.removeEventListener("mousemove", onMouseMove, true);
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("contextmenu", onContextMenu, true);
+    }
+
+    // ================================================================
+    // SVG foreignObject 方式渲染元素
+    // ================================================================
+    function captureElementAsImage(el) {
+      return new Promise(function (resolve, reject) {
+        var rect = el.getBoundingClientRect();
+        var w = Math.round(rect.width), h = Math.round(rect.height);
+        if (w <= 0 || h <= 0) return reject(new Error("zero size"));
+
+        var maxD = 3000;
+        var scale = Math.min(1, maxD / Math.max(w, h));
+        var fw = Math.round(w * scale), fh = Math.round(h * scale);
+
+        var computed = getComputedStyle(el);
+        var styleProps = [
+          "color","background-color","background-image","font-family","font-size","font-weight","font-style",
+          "text-align","text-decoration","line-height","letter-spacing",
+          "padding-left","padding-right","padding-top","padding-bottom",
+          "border","border-radius","box-shadow",
+          "display","overflow","white-space","word-break","opacity"
+        ];
+        var cssText = "";
+        for (var i = 0; i < styleProps.length; i++) {
+          var p = styleProps[i];
+          var v = computed.getPropertyValue(p);
+          if (v && v !== "none" && v !== "normal" && v !== "auto" &&
+              v !== "rgba(0, 0, 0, 0)" && v !== "transparent") {
+            cssText += p + ":" + v + ";";
+          }
+        }
+
+        var clone = el.cloneNode(true);
+        var html = clone.outerHTML || el.outerHTML || el.innerHTML;
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fw + '" height="' + fh + '">' +
+          '<foreignObject width="100%" height="100%">' +
+          '<div xmlns="http://www.w3.org/1999/xhtml" style="' + cssText + 'width:' + w + 'px;min-height:' + h + 'px;overflow:hidden;">' +
+          html + '</div></foreignObject></svg>';
+
+        var blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+        var url = URL.createObjectURL(blob);
+        var img = new Image();
+        img.onload = function () {
+          URL.revokeObjectURL(url);
+          var cv = document.createElement("canvas");
+          cv.width = fw; cv.height = fh;
+          cv.getContext("2d").drawImage(img, 0, 0, fw, fh);
+          resolve(cv.toDataURL("image/png", 0.95));
+        };
+        img.onerror = function () {
+          URL.revokeObjectURL(url);
+          reject(new Error("SVG render failed"));
+        };
+        img.src = url;
+      });
+    }
+
+    // ================================================================
+    // 元素截图入口（修正 Bug 2：容器内图片穿透）
+    // ================================================================
+    async function captureElement(el) {
+      // 修正 Bug 2：如果捕获目标不是媒体元素，检查是否包含主要图片
+      var tag = el.tagName;
+      if (!/^(IMG|VIDEO|CANVAS|SVG)$/i.test(tag)) {
+        var childMedia = el.querySelector("img:not([width='1']):not([height='1']), video, canvas");
+        if (childMedia) {
+          var cmRect = childMedia.getBoundingClientRect();
+          if (cmRect.width >= 20 && cmRect.height >= 20) {
+            var elRect = el.getBoundingClientRect();
+            var areaRatio = (cmRect.width * cmRect.height) / (elRect.width * elRect.height);
+            if (areaRatio >= 0.3) {
+              el = childMedia;
+              tag = el.tagName;
+            }
+          }
+        }
+      }
+
+      var r = el.getBoundingClientRect();
+      var downloadUrl = null;
+
+      try {
+        if (tag === "IMG") {
+          var srcUrl = el.src;
+          try {
+            var cv1 = document.createElement("canvas");
+            cv1.width = el.naturalWidth; cv1.height = el.naturalHeight;
+            cv1.getContext("2d").drawImage(el, 0, 0);
+            downloadUrl = cv1.toDataURL("image/png", 0.95);
+          } catch (directErr) {
+            try {
+              downloadUrl = await new Promise(function (resolve, reject) {
+                var tmpImg = new Image();
+                tmpImg.crossOrigin = "anonymous";
+                tmpImg.onload = function () {
+                  var cv = document.createElement("canvas");
+                  cv.width = tmpImg.naturalWidth; cv.height = tmpImg.naturalHeight;
+                  cv.getContext("2d").drawImage(tmpImg, 0, 0);
+                  resolve(cv.toDataURL("image/png", 0.95));
+                };
+                tmpImg.onerror = function () { reject(new Error("reload failed")); };
+                tmpImg.src = srcUrl;
+              });
+            } catch (reloadErr) {
+              downloadUrl = await captureElementAsImage(el);
+            }
+          }
+        } else if (tag === "CANVAS") {
+          try { downloadUrl = el.toDataURL("image/png"); } catch (e3) {}
+        } else if (tag === "VIDEO") {
+          var vw = el.videoWidth || r.width, vh = el.videoHeight || r.height;
+          var cv2 = document.createElement("canvas");
+          cv2.width = vw; cv2.height = vh;
+          cv2.getContext("2d").drawImage(el, 0, 0, vw, vh);
+          downloadUrl = cv2.toDataURL("image/png", 0.95);
+        } else {
+          try {
+            downloadUrl = await captureElementAsImage(el);
+          } catch (svgErr) {
+            var text = (el.textContent || "").trim();
+            if (text.length > 0) {
+              var cv3 = document.createElement("canvas");
+              cv3.width = Math.min(r.width, 1200); cv3.height = Math.min(r.height, 800);
+              var ctx = cv3.getContext("2d");
+              ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv3.width, cv3.height);
+              ctx.fillStyle = "#333"; ctx.font = "14px system-ui,'Microsoft YaHei',sans-serif";
+              var line = "", y = 20;
+              var chars = text.split("");
+              for (var ci = 0; ci < chars.length; ci++) {
+                if (ctx.measureText(line + chars[ci]).width > cv3.width - 40) {
+                  ctx.fillText(line, 20, y); line = chars[ci]; y += 22;
+                  if (y > cv3.height - 20) break;
+                } else { line += chars[ci]; }
+              }
+              if (line && y <= cv3.height - 20) ctx.fillText(line, 20, y);
+              downloadUrl = cv3.toDataURL("image/png", 0.95);
+            }
+          }
+        }
+
+        if (downloadUrl) {
+          try { chrome.runtime.sendMessage({ action: "downloadImage", url: downloadUrl, filename: partNumber + ".png" }); } catch (e4) {}
+        }
+        window.__img_capture_timer = setTimeout(cleanup, 300);
+      } catch (err) {
+        console.error("captureElement:", err);
+        cleanup();
+      }
+    }
+
+    // ================================================================
+    // 事件处理器
+    // ================================================================
+    function onMouseMove(e) {
+      if (window.__img_capture_gen !== currentGen) return;
+      var el = getElementAtPoint(e.clientX, e.clientY);
+      if (el) { hoveredEl = el; }
+    }
+
+    function onClick(e) {
+      if (window.__img_capture_gen !== currentGen) return;
       if (!hoveredEl) return;
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
-
-      // 闪烁确认
-      overlay.style.background = "rgba(26,115,232,0.35)";
-      overlay.style.outline = "3px solid rgba(26,115,232,0.85)";
-      overlay.style.boxShadow = "0 0 0 8px rgba(26,115,232,0.2)";
-
       var el = hoveredEl;
       setTimeout(function () { captureElement(el); }, 120);
     }
-  }
 
-  function onMouseDown(e) {
-    if (window.__img_capture_gen !== currentGen) return;
-    if (captureMode !== "area") return;
-    if (e.button !== 0) return; // 只响应左键
-
-    e.preventDefault();
-    e.stopPropagation();
-    dragging = true;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
-    // 隐藏元素遮罩，显示矩形框
-    overlay.style.display = "none";
-    overlayVisible = false;
-    tooltip.style.display = "none";
-  }
-
-  function onMouseUp(e) {
-    if (window.__img_capture_gen !== currentGen) return;
-    if (captureMode !== "area" || !dragging) return;
-
-    e.preventDefault();
-    e.stopPropagation();
-    dragging = false;
-
-    var x1 = dragStartX, y1 = dragStartY;
-    var x2 = e.clientX, y2 = e.clientY;
-    var w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
-
-    // 太小忽略（防止误触）
-    if (w < 10 || h < 10) {
-      rectOverlay.style.display = "none";
-      tooltip.style.display = "none";
-      return;
+    function onKeyDown(e) {
+      if (window.__img_capture_gen !== currentGen) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        cleanup();
+      }
     }
 
-    // 闪烁确认
-    rectOverlay.style.outline = "3px solid rgba(255,152,0,1)";
-    rectOverlay.style.background = "rgba(255,152,0,0.25)";
-
-    var rect = {
-      left: Math.min(x1, x2),
-      top: Math.min(y1, y2),
-      width: w,
-      height: h
-    };
-
-    setTimeout(function () { captureArea(rect); }, 120);
-  }
-
-  function onWheel(e) {
-    if (window.__img_capture_gen !== currentGen) return;
-    if (captureMode !== "element") return;
-    e.preventDefault();
-    e.stopPropagation();
-    navigateHierarchy(e.deltaY);
-  }
-
-  function onContextMenu(e) {
-    // 捕捉状态下阻止右键菜单
-    if (window.__img_capture_gen !== currentGen) return;
-    e.preventDefault();
-    e.stopPropagation();
-  }
-
-  function onKeyDown(e) {
-    if (window.__img_capture_gen !== currentGen) return;
-
-    if (e.key === "Escape") {
+    function onContextMenu(e) {
+      if (window.__img_capture_gen !== currentGen) return;
       e.preventDefault();
       e.stopPropagation();
-      cleanup();
-      return;
     }
 
-    if (e.key === "r" || e.key === "R") {
-      e.preventDefault();
-      e.stopPropagation();
-      // 切换模式
-      if (captureMode === "element") {
-        captureMode = "area";
-        overlay.style.display = "none";
-        overlayVisible = false;
-        tooltip.style.display = "none";
-        hoveredEl = null;
-      } else {
-        captureMode = "element";
-        rectOverlay.style.display = "none";
-        tooltip.style.display = "none";
-      }
-      updateBanner();
-      return;
-    }
+    // ================================================================
+    // 启动事件监听
+    // ================================================================
+    document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("contextmenu", onContextMenu, true);
 
-    // 元素模式下的键盘层级导航
-    if (captureMode === "element") {
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        navigateHierarchy(-1);
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        navigateHierarchy(1);
-      }
-    }
+    console.log("[截图捕获] 注入成功");
+  } catch (err) {
+    console.error("[截图捕获] 注入失败:", err.message, err.stack);
+    try { cleanup(); } catch (e2) {}
   }
-
-  // ================================================================
-  // 截图 & 保存
-  // ================================================================
-
-  // SVG foreignObject 方式渲染元素
-  function captureElementAsImage(el) {
-    return new Promise(function (resolve, reject) {
-      var rect = el.getBoundingClientRect();
-      var w = Math.round(rect.width), h = Math.round(rect.height);
-      if (w <= 0 || h <= 0) return reject(new Error("zero size"));
-
-      var maxD = 3000;
-      var scale = Math.min(1, maxD / Math.max(w, h));
-      var fw = Math.round(w * scale), fh = Math.round(h * scale);
-
-      var computed = getComputedStyle(el);
-      var styleProps = [
-        "color","background-color","background-image","font-family","font-size","font-weight","font-style",
-        "text-align","text-decoration","line-height","letter-spacing",
-        "padding-left","padding-right","padding-top","padding-bottom",
-        "border","border-radius","box-shadow",
-        "display","overflow","white-space","word-break","opacity"
-      ];
-      var cssText = "";
-      for (var i = 0; i < styleProps.length; i++) {
-        var p = styleProps[i];
-        var v = computed.getPropertyValue(p);
-        if (v && v !== "none" && v !== "normal" && v !== "auto" &&
-            v !== "rgba(0, 0, 0, 0)" && v !== "transparent") {
-          cssText += p + ":" + v + ";";
-        }
-      }
-
-      var clone = el.cloneNode(true);
-      var html = clone.outerHTML || el.outerHTML || el.innerHTML;
-      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fw + '" height="' + fh + '">' +
-        '<foreignObject width="100%" height="100%">' +
-        '<div xmlns="http://www.w3.org/1999/xhtml" style="' + cssText + 'width:' + w + 'px;min-height:' + h + 'px;overflow:hidden;">' +
-        html + '</div></foreignObject></svg>';
-
-      var blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
-      var url = URL.createObjectURL(blob);
-      var img = new Image();
-      img.onload = function () {
-        URL.revokeObjectURL(url);
-        var cv = document.createElement("canvas");
-        cv.width = fw; cv.height = fh;
-        cv.getContext("2d").drawImage(img, 0, 0, fw, fh);
-        resolve(cv.toDataURL("image/png", 0.95));
-      };
-      img.onerror = function () {
-        URL.revokeObjectURL(url);
-        reject(new Error("SVG render failed"));
-      };
-      img.src = url;
-    });
-  }
-
-  // 区域截图：截取屏幕指定区域（viewport 坐标）
-  function captureAreaRect(areaRect) {
-    return new Promise(function (resolve, reject) {
-      var l = areaRect.left, t = areaRect.top;
-      var w = areaRect.width, h = areaRect.height;
-
-      if (w <= 0 || h <= 0) return reject(new Error("zero size area"));
-
-      // 策略：找出该区域中包含的所有可见元素，渲染到 canvas
-      // 简化但有效的方案：使用整个 body 的 SVG 渲染，但裁剪到区域
-      var maxD = 3000;
-      var scale = Math.min(1, maxD / Math.max(w, h));
-      var fw = Math.round(w * scale), fh = Math.round(h * scale);
-
-      // 收集区域内的主要内容
-      var cloneContainer = document.createElement("div");
-      cloneContainer.style.cssText = "position:relative;width:" + document.documentElement.scrollWidth + "px;";
-
-      // 遍历区域内的可见元素
-      var allEls = document.querySelectorAll("body *");
-      var areaElements = [];
-      for (var i = 0; i < allEls.length; i++) {
-        var el = allEls[i];
-        if (OUR_IDS[el.id]) continue;
-        var rr = el.getBoundingClientRect();
-        // 检查是否与区域相交
-        if (rr.right < l || rr.left > l + w || rr.bottom < t || rr.top > t + h) continue;
-        if (rr.width <= 0 || rr.height <= 0) continue;
-        // 只取叶子节点或包含图片的元素
-        var tag = el.tagName;
-        if (tag === "IMG" || tag === "CANVAS" || tag === "VIDEO" || tag === "SVG" ||
-            (el.children.length === 0 && (el.textContent || "").trim().length > 0) ||
-            tag === "BUTTON" || tag === "INPUT" || tag === "SELECT") {
-          areaElements.push({ el: el, rect: rr, tag: tag });
-        }
-      }
-
-      // 如果区域内元素较少，直接用简化方式
-      if (areaElements.length <= 50) {
-        // 用 SVG foreignObject 渲染整个 body，然后裁剪
-        var bodyClone = document.body.cloneNode(true);
-        // 移除我们的 UI
-        IDS.forEach(function (id) {
-          try { var rmv = bodyClone.querySelector("#" + id); if (rmv) rmv.remove(); } catch (e2) {}
-        });
-
-        var bodyHtml = bodyClone.innerHTML || "";
-        var svg2 = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fw + '" height="' + fh + '">' +
-          '<foreignObject width="100%" height="100%">' +
-          '<div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:' + document.documentElement.scrollWidth + 'px;">' +
-          bodyHtml + '</div></foreignObject></svg>';
-
-        // 创建一个带 viewBox 偏移的 SVG 来裁剪到目标区域
-        var svgCrop = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fw + '" height="' + fh + '" viewBox="' + l + ' ' + t + ' ' + w + ' ' + h + '">' +
-          '<foreignObject x="' + l + '" y="' + t + '" width="' + w + '" height="' + h + '">' +
-          '<div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:' + w + 'px;height:' + h + 'px;overflow:hidden;">' +
-          bodyHtml + '</div></foreignObject></svg>';
-
-        var blob2 = new Blob([svgCrop], { type: "image/svg+xml;charset=utf-8" });
-        var url2 = URL.createObjectURL(blob2);
-        var img2 = new Image();
-        img2.onload = function () {
-          URL.revokeObjectURL(url2);
-          var cv2 = document.createElement("canvas");
-          cv2.width = fw; cv2.height = fh;
-          cv2.getContext("2d").drawImage(img2, 0, 0, fw, fh);
-          resolve(cv2.toDataURL("image/png", 0.95));
-        };
-        img2.onerror = function () {
-          URL.revokeObjectURL(url2);
-          // 降级：纯色画布 + 尺寸标注
-          var fb = document.createElement("canvas");
-          fb.width = fw; fb.height = fh;
-          var ctx = fb.getContext("2d");
-          ctx.fillStyle = "#f5f5f5"; ctx.fillRect(0, 0, fw, fh);
-          ctx.fillStyle = "#999"; ctx.font = "14px system-ui,sans-serif";
-          ctx.textAlign = "center";
-          ctx.fillText(w + "×" + h + " 区域截图", fw / 2, fh / 2);
-          resolve(fb.toDataURL("image/png", 0.95));
-        };
-        img2.src = url2;
-      } else {
-        // 复杂区域：白底 + 尺寸
-        var fb2 = document.createElement("canvas");
-        fb2.width = fw; fb2.height = fh;
-        var ctx2 = fb2.getContext("2d");
-        ctx2.fillStyle = "#f5f5f5"; ctx2.fillRect(0, 0, fw, fh);
-        ctx2.fillStyle = "#666"; ctx2.font = "14px system-ui,sans-serif";
-        ctx2.textAlign = "center";
-        ctx2.fillText("已选择 " + w + "×" + h + " 区域", fw / 2, fh / 2);
-        resolve(fb2.toDataURL("image/png", 0.95));
-      }
-    });
-  }
-
-  // ---- 元素截图入口 ----
-  async function captureElement(el) {
-    overlay.style.display = "none";
-    overlayVisible = false;
-    tooltip.style.display = "none";
-
-    var tag = el.tagName;
-    var r = el.getBoundingClientRect();
-    var downloadUrl = null;
-
-    try {
-      if (tag === "IMG") {
-        var srcUrl = el.src;
-        try {
-          var cv1 = document.createElement("canvas");
-          cv1.width = el.naturalWidth; cv1.height = el.naturalHeight;
-          cv1.getContext("2d").drawImage(el, 0, 0);
-          downloadUrl = cv1.toDataURL("image/png", 0.95);
-        } catch (directErr) {
-          try {
-            downloadUrl = await new Promise(function (resolve, reject) {
-              var tmpImg = new Image();
-              tmpImg.crossOrigin = "anonymous";
-              tmpImg.onload = function () {
-                var cv = document.createElement("canvas");
-                cv.width = tmpImg.naturalWidth; cv.height = tmpImg.naturalHeight;
-                cv.getContext("2d").drawImage(tmpImg, 0, 0);
-                resolve(cv.toDataURL("image/png", 0.95));
-              };
-              tmpImg.onerror = function () { reject(new Error("reload failed")); };
-              tmpImg.src = srcUrl;
-            });
-          } catch (reloadErr) {
-            downloadUrl = await captureElementAsImage(el);
-          }
-        }
-      } else if (tag === "CANVAS") {
-        try { downloadUrl = el.toDataURL("image/png"); } catch (e3) {}
-      } else if (tag === "VIDEO") {
-        var vw = el.videoWidth || r.width, vh = el.videoHeight || r.height;
-        var cv2 = document.createElement("canvas");
-        cv2.width = vw; cv2.height = vh;
-        cv2.getContext("2d").drawImage(el, 0, 0, vw, vh);
-        downloadUrl = cv2.toDataURL("image/png", 0.95);
-      } else {
-        try {
-          downloadUrl = await captureElementAsImage(el);
-        } catch (svgErr) {
-          var text = (el.textContent || "").trim();
-          if (text.length > 0) {
-            var cv3 = document.createElement("canvas");
-            cv3.width = Math.min(r.width, 1200); cv3.height = Math.min(r.height, 800);
-            var ctx = cv3.getContext("2d");
-            ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv3.width, cv3.height);
-            ctx.fillStyle = "#333"; ctx.font = "14px system-ui,'Microsoft YaHei',sans-serif";
-            var line = "", y = 20;
-            var chars = text.split("");
-            for (var ci = 0; ci < chars.length; ci++) {
-              if (ctx.measureText(line + chars[ci]).width > cv3.width - 40) {
-                ctx.fillText(line, 20, y); line = chars[ci]; y += 22;
-                if (y > cv3.height - 20) break;
-              } else { line += chars[ci]; }
-            }
-            if (line && y <= cv3.height - 20) ctx.fillText(line, 20, y);
-            downloadUrl = cv3.toDataURL("image/png", 0.95);
-          }
-        }
-      }
-
-      if (downloadUrl) {
-        try { chrome.runtime.sendMessage({ action: "downloadImage", url: downloadUrl, filename: partNumber + ".png" }); } catch (e4) {}
-      }
-      window.__img_capture_timer = setTimeout(cleanup, 300);
-    } catch (err) {
-      console.error("captureElement:", err);
-      cleanup();
-    }
-  }
-
-  // ---- 区域截图入口 ----
-  async function captureArea(rect) {
-    rectOverlay.style.display = "none";
-    tooltip.style.display = "none";
-
-    try {
-      var downloadUrl = await captureAreaRect(rect);
-      if (downloadUrl) {
-        try { chrome.runtime.sendMessage({ action: "downloadImage", url: downloadUrl, filename: partNumber + "_area.png" }); } catch (e5) {}
-      }
-      window.__img_capture_timer = setTimeout(cleanup, 300);
-    } catch (err) {
-      console.error("captureArea:", err);
-      cleanup();
-    }
-  }
-
-  // ================================================================
-  // 启动事件监听
-  // ================================================================
-  document.addEventListener("mousemove", onMouseMove, true);
-  document.addEventListener("click", onClick, true);
-  document.addEventListener("keydown", onKeyDown, true);
-  document.addEventListener("mousedown", onMouseDown, true);
-  document.addEventListener("mouseup", onMouseUp, true);
-  document.addEventListener("wheel", onWheel, { passive: false, capture: true });
-  document.addEventListener("contextmenu", onContextMenu, true);
 }
 
 // 定期刷新

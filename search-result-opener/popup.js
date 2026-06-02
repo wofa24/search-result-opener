@@ -95,7 +95,7 @@ async function loadSearchInfo() {
         );
       }
     }
-    showStatus("请输入料号开始搜索", "info");
+    showStatus("", "info");
   } catch (error) {
     console.error("Error loading search info:", error);
   }
