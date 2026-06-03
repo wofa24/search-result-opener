@@ -187,26 +187,27 @@ body {
 }
 
 .status {
+  flex-shrink: 0;
   min-height: 20px;
-  padding: 8px;
-  margin-bottom: 4px;
+  margin: 0 16px;
+  padding: 5px 10px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 12px;
   text-align: center;
 }
 
 .status.info {
-  background-color: #e3f2fd;
-  color: #1976d2;
+  background-color: #e8f4fd;
+  color: #1565c0;
 }
 
 .status.error {
-  background-color: #ffebee;
+  background-color: #fef0f0;
   color: #c62828;
 }
 
 .status.success {
-  background-color: #e8f5e9;
+  background-color: #edf7ed;
   color: #2e7d32;
 }
 
@@ -215,10 +216,8 @@ body {
   flex-shrink: 0;
   display: flex;
   gap: 8px;
-  padding: 10px 16px;
+  padding: 6px 16px 10px;
   background: white;
-  border-top: 1px solid #eee;
-  box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
 }
 
 .btn {

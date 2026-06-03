@@ -395,6 +395,22 @@ async function startImageCapture() {
       throw new Error(chrome.runtime.lastError.message);
     }
     console.log("[截图捕获] 注入完成, result:", injectResult);
+    // 将焦点还给目标页面，使键盘事件（Esc）能到达注入的监听器
+    try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
+
+    // 在侧边栏也监听 Esc，确保即使焦点在侧边栏也能退出截图模式
+    const sidebarEscHandler = function(e) {
+      if (e.key === "Escape") {
+        document.removeEventListener("keydown", sidebarEscHandler, true);
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: function() { if (window.__imgc_cleanup) window.__imgc_cleanup(); }
+        }).catch(function() {});
+      }
+    };
+    document.addEventListener("keydown", sidebarEscHandler, true);
+    // 保存引用以便页面侧的 cleanup 也能移除它（通过代数标记自然过期）
+    window.__imgc_sidebarEscHandler = sidebarEscHandler;
   } catch (e) {
     console.error("startImageCapture error:", e);
     console.error("[截图捕获] startImageCapture error:", e);
@@ -415,7 +431,7 @@ function injectImageCapture(partNumber) {
   try {
     // --- 清理上一次残留 ---
     if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
-    var IDS = ["__imgc_banner", "__imgc_style"];
+    var IDS = ["__imgc_banner", "__imgc_style", "__imgc_overlay", "__imgc_label"];
     IDS.forEach(function (id) {
       try { var old = document.getElementById(id); if (old) old.remove(); } catch (e) {}
     });
@@ -441,6 +457,17 @@ function injectImageCapture(partNumber) {
         "display:inline-block;padding:1px 6px;margin:0 2px;" +
         "background:rgba(255,255,255,0.2);border-radius:3px;" +
         "font-size:12px;font-family:monospace;border:1px solid rgba(255,255,255,0.3);" +
+      "}" +
+      "#__imgc_overlay{" +
+        "position:fixed;pointer-events:none;z-index:2147483646;" +
+        "border:2px solid #1a73e8;background:rgba(26,115,232,0.08);" +
+        "transition:all 0.08s ease;border-radius:2px;display:none;" +
+      "}" +
+      "#__imgc_label{" +
+        "position:fixed;pointer-events:none;z-index:2147483647;" +
+        "padding:2px 6px;background:#1a73e8;color:#fff;font-size:11px;" +
+        "font-family:system-ui,'Microsoft YaHei',sans-serif;border-radius:3px;" +
+        "white-space:nowrap;display:none;line-height:1.4;" +
       "}";
     document.head.appendChild(style);
 
@@ -449,9 +476,19 @@ function injectImageCapture(partNumber) {
     // ================================================================
     var banner = document.createElement("div");
     banner.id = "__imgc_banner";
-    banner.innerHTML = '📷 <b>截图模式</b> — <kbd>单击</kbd> 保存光标处元素 &nbsp;|&nbsp; <kbd>Esc</kbd> 退出';
+    banner.innerHTML = '📷 <b>截图模式</b> — <kbd>单击</kbd> 保存光标处元素 &nbsp;|&nbsp; <kbd>Esc</kbd> 退出' +
+      '<div id="__imgc_status" style="font-size:12px;margin-top:4px;min-height:18px;opacity:0.9;"></div>';
 
     document.body.appendChild(banner);
+
+    // 创建高亮预选框和标签
+    var overlay = document.createElement("div");
+    overlay.id = "__imgc_overlay";
+    document.body.appendChild(overlay);
+
+    var labelEl = document.createElement("div");
+    labelEl.id = "__imgc_label";
+    document.body.appendChild(labelEl);
 
     // ================================================================
     // 状态
@@ -459,6 +496,19 @@ function injectImageCapture(partNumber) {
     var hoveredEl = null;
     var OUR_IDS = {};
     IDS.forEach(function (id) { OUR_IDS[id] = true; });
+    // 将 overlay 和 label 也加入排除列表，防止 getElementAtPoint 选中它们
+    OUR_IDS["__imgc_overlay"] = true;
+    OUR_IDS["__imgc_label"] = true;
+
+    // ---- 状态反馈函数 ----
+    function setStatus(text, isError) {
+      var statusEl = document.getElementById("__imgc_status");
+      if (statusEl) {
+        statusEl.textContent = text;
+        statusEl.style.color = isError ? "#ff6b6b" : "#fff";
+        statusEl.style.fontWeight = isError ? "bold" : "normal";
+      }
+    }
 
     // ---- 工具函数 ----
 
@@ -488,15 +538,39 @@ function injectImageCapture(partNumber) {
         var hasContent = (cur.querySelector("img, svg, video, canvas"));
         var isListOrCard = /^(LI|ARTICLE|SECTION|DIV|MAIN|ASIDE|HEADER|FOOTER|NAV|FIGURE|FORM)$/i.test(cur.tagName);
 
-        if (isBlock || isListOrCard || hasContent || cr.width >= 100 || cr.height >= 40) {
+        // 检查 CSS background-image（用于捕获背景图容器）
+        var bgImage = getComputedStyle(cur).backgroundImage;
+        var hasBgImage = bgImage && bgImage !== "none" && bgImage.indexOf("url(") !== -1;
+
+        if (isBlock || isListOrCard || hasContent || hasBgImage || cr.width >= 100 || cr.height >= 40) {
           var curTag = cur.tagName;
           if (!/^(IMG|VIDEO|CANVAS|SVG)$/i.test(curTag)) {
             var imgs = cur.querySelectorAll("img, video, canvas");
+            // 优先穿透：如果只有一个子媒体元素，返回它
             if (imgs.length === 1) {
               var ir = imgs[0].getBoundingClientRect();
               if (ir.width >= 20 && ir.height >= 20) {
                 return imgs[0];
               }
+            }
+            // 多子媒体元素时：优先查找占据主要面积的 canvas（360°查看器常见模式）
+            if (imgs.length > 1) {
+              for (var mi = 0; mi < imgs.length; mi++) {
+                var mEl = imgs[mi];
+                if (mEl.tagName === "CANVAS") {
+                  var mr = mEl.getBoundingClientRect();
+                  if (mr.width >= 100 && mr.height >= 100) {
+                    var areaRatio2 = (mr.width * mr.height) / (cr.width * cr.height);
+                    if (areaRatio2 >= 0.5) {
+                      return mEl;
+                    }
+                  }
+                }
+              }
+            }
+            // 如果有背景图但无子媒体元素，返回容器本身（交给 captureElement 的 background-image 路径）
+            if (hasBgImage && imgs.length === 0 && /^(DIV|LI|A|SPAN)$/i.test(curTag)) {
+              return cur;
             }
           }
           return cur;
@@ -518,19 +592,38 @@ function injectImageCapture(partNumber) {
         if (OUR_IDS[el.id]) continue;
         if (/^(IMG|VIDEO|CANVAS)$/i.test(el.tagName)) {
           var rr = el.getBoundingClientRect();
-          if (rr.width >= 20 && rr.height >= 20) {
+          // canvas 放宽阈值（360°查看器的 canvas 可能较小）
+          var minW = el.tagName === "CANVAS" ? 10 : 20;
+          var minH = el.tagName === "CANVAS" ? 10 : 20;
+          if (rr.width >= minW && rr.height >= minH) {
             return el;
           }
         }
       }
 
-      // 第二遍：常规元素查找
+      // 第二遍：常规元素查找（跳过 zoom lens 遮罩）
+      var ZOOM_LENS_CLASSES = ["zoom-lens", "zoomLens", "cloud-zoom-lens", "img-zoom-lens",
+                               "magnify-lens", "magnifier-lens", "zoomContainer", "zoomWindow"];
       for (var j = 0; j < all.length; j++) {
         var el2 = all[j];
         if (!el2 || el2 === document.body || el2 === document.documentElement) continue;
         if (OUR_IDS[el2.id]) continue;
+        // 跳过 zoom lens 遮罩层（不修改 DOM，仅在元素选择时过滤）
+        var isZoomLens = false;
+        var elClass = el2.className || "";
+        if (typeof elClass === "string") {
+          for (var z = 0; z < ZOOM_LENS_CLASSES.length; z++) {
+            if (elClass.indexOf(ZOOM_LENS_CLASSES[z]) !== -1) { isZoomLens = true; break; }
+          }
+        }
+        if (isZoomLens) continue;
+        // 跳过透明/隐藏/极小元素（遮罩层常见特征）
+        try {
+          var el2Style = getComputedStyle(el2);
+          if (el2Style.opacity === "0" || el2Style.visibility === "hidden") continue;
+        } catch (e) {}
         var rr2 = el2.getBoundingClientRect();
-        if (rr2.width > 0 && rr2.height > 0) {
+        if (rr2.width > 1 && rr2.height > 1) {
           return getMeaningfulElement(el2);
         }
       }
@@ -553,18 +646,66 @@ function injectImageCapture(partNumber) {
     // ---- 清理 ----
     function cleanup() {
       if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
+      window.__imgc_capturing = false;
+      delete window.__imgc_cleanup;
       try { document.body.removeChild(banner); } catch (e) {}
       try { document.head.removeChild(style); } catch (e) {}
-      document.removeEventListener("mousemove", onMouseMove, true);
-      document.removeEventListener("click", onClick, true);
-      document.removeEventListener("keydown", onKeyDown, true);
-      document.removeEventListener("contextmenu", onContextMenu, true);
+      try { document.body.removeChild(overlay); } catch (e) {}
+      try { document.body.removeChild(labelEl); } catch (e) {}
+      window.removeEventListener("mousemove", onMouseMove, true);
+      window.removeEventListener("click", onClick, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("contextmenu", onContextMenu, true);
+    }
+    // 暴露 cleanup 到 window，使侧边栏可以通过注入脚本调用退出
+    window.__imgc_cleanup = cleanup;
+
+    // ================================================================
+    // 获取图片的最佳（最高分辨率）URL
+    // ================================================================
+    function getBestImageUrl(imgEl) {
+      // 按优先级检查高分辨率来源
+      var attrs = ["data-zoom", "data-src", "data-large", "data-full",
+                   "data-original", "data-lazy-src", "data-high-res", "data-zoomed"];
+      for (var i = 0; i < attrs.length; i++) {
+        var val = imgEl.getAttribute(attrs[i]);
+        if (val && /^(https?:)?\/\//.test(val)) return val;
+      }
+      // 检查 srcset 中最大 w 描述符的 URL
+      var srcset = imgEl.getAttribute("srcset");
+      if (srcset) {
+        var candidates = srcset.split(",").map(function(s) { return s.trim(); });
+        var bestUrl = null, bestW = 0;
+        for (var j = 0; j < candidates.length; j++) {
+          var parts = candidates[j].split(/\s+/);
+          if (parts.length >= 2) {
+            var url = parts[0];
+            var wMatch = parts[1].match(/^(\d+)w$/);
+            if (wMatch) {
+              var w = parseInt(wMatch[1], 10);
+              if (w > bestW) { bestW = w; bestUrl = url; }
+            }
+          }
+        }
+        if (bestUrl) return bestUrl;
+      }
+      // 检查父元素上的 data 属性
+      var parent = imgEl.parentElement;
+      if (parent) {
+        for (var k = 0; k < attrs.length; k++) {
+          var pv = parent.getAttribute(attrs[k]);
+          if (pv && /^(https?:)?\/\//.test(pv)) return pv;
+        }
+      }
+      // 兜底返回 img.src
+      return imgEl.src;
     }
 
     // ================================================================
     // SVG foreignObject 方式渲染元素
     // ================================================================
-    function captureElementAsImage(el) {
+    function captureElementAsImage(el, timeoutMs) {
+      timeoutMs = timeoutMs || 3000;
       return new Promise(function (resolve, reject) {
         var rect = el.getBoundingClientRect();
         var w = Math.round(rect.width), h = Math.round(rect.height);
@@ -602,7 +743,16 @@ function injectImageCapture(partNumber) {
         var blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
         var url = URL.createObjectURL(blob);
         var img = new Image();
+
+        var resolved = false;
+        var timeoutId = setTimeout(function() {
+          if (!resolved) { resolved = true; URL.revokeObjectURL(url); reject(new Error("SVG render timeout")); }
+        }, timeoutMs);
+
         img.onload = function () {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeoutId);
           URL.revokeObjectURL(url);
           var cv = document.createElement("canvas");
           cv.width = fw; cv.height = fh;
@@ -610,6 +760,9 @@ function injectImageCapture(partNumber) {
           resolve(cv.toDataURL("image/png", 0.95));
         };
         img.onerror = function () {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeoutId);
           URL.revokeObjectURL(url);
           reject(new Error("SVG render failed"));
         };
@@ -619,22 +772,37 @@ function injectImageCapture(partNumber) {
 
     // ================================================================
     // 元素截图入口（修正 Bug 2：容器内图片穿透）
+    // 返回: Promise<string|null> — 成功返回 dataURL，失败返回 null
     // ================================================================
     async function captureElement(el) {
-      // 修正 Bug 2：如果捕获目标不是媒体元素，检查是否包含主要图片
+      // 修正 Bug 2+：若捕获目标不是媒体元素，找 DIV 内最佳子图片
+      // 不再依赖面积比（areaRatio >= 0.3 容易漏掉卡片布局中的产品图），
+      // 而是遍历所有子 img，按显示面积排序选最大的，保底也检查 video/canvas
       var tag = el.tagName;
       if (!/^(IMG|VIDEO|CANVAS|SVG)$/i.test(tag)) {
-        var childMedia = el.querySelector("img:not([width='1']):not([height='1']), video, canvas");
-        if (childMedia) {
-          var cmRect = childMedia.getBoundingClientRect();
-          if (cmRect.width >= 20 && cmRect.height >= 20) {
-            var elRect = el.getBoundingClientRect();
-            var areaRatio = (cmRect.width * cmRect.height) / (elRect.width * elRect.height);
-            if (areaRatio >= 0.3) {
-              el = childMedia;
-              tag = el.tagName;
-            }
+        var bestChild = null, bestArea = 0;
+        var allChildImgs = el.querySelectorAll("img");
+        for (var ci = 0; ci < allChildImgs.length; ci++) {
+          var cImg = allChildImgs[ci];
+          var cr = cImg.getBoundingClientRect();
+          // 跳过极小图 / 占位图 / 懒加载 1×1 占位
+          if (cr.width < 30 || cr.height < 30) continue;
+          if (cImg.naturalWidth === 1 && cImg.naturalHeight === 1) continue;
+          var ca = cr.width * cr.height;
+          if (ca > bestArea) { bestArea = ca; bestChild = cImg; }
+        }
+        // 无合适 img 时检查 video / canvas
+        if (!bestChild) {
+          var childMedia = el.querySelector("video, canvas");
+          if (childMedia) {
+            var cmr = childMedia.getBoundingClientRect();
+            if (cmr.width >= 20 && cmr.height >= 20) { bestChild = childMedia; }
           }
+        }
+        // 穿透到最佳子元素
+        if (bestChild) {
+          el = bestChild;
+          tag = el.tagName;
         }
       }
 
@@ -643,7 +811,8 @@ function injectImageCapture(partNumber) {
 
       try {
         if (tag === "IMG") {
-          var srcUrl = el.src;
+          setStatus("正在处理图片...");
+          var srcUrl = getBestImageUrl(el);
           try {
             var cv1 = document.createElement("canvas");
             cv1.width = el.naturalWidth; cv1.height = el.naturalHeight;
@@ -652,35 +821,142 @@ function injectImageCapture(partNumber) {
           } catch (directErr) {
             try {
               downloadUrl = await new Promise(function (resolve, reject) {
+                var resolved = false;
+                var timeoutId = setTimeout(function() {
+                  if (!resolved) { resolved = true; reject(new Error("image load timeout")); }
+                }, 5000);
                 var tmpImg = new Image();
                 tmpImg.crossOrigin = "anonymous";
                 tmpImg.onload = function () {
+                  if (resolved) return;
+                  resolved = true;
+                  clearTimeout(timeoutId);
                   var cv = document.createElement("canvas");
                   cv.width = tmpImg.naturalWidth; cv.height = tmpImg.naturalHeight;
                   cv.getContext("2d").drawImage(tmpImg, 0, 0);
                   resolve(cv.toDataURL("image/png", 0.95));
                 };
-                tmpImg.onerror = function () { reject(new Error("reload failed")); };
+                tmpImg.onerror = function () {
+                  if (resolved) return;
+                  resolved = true;
+                  clearTimeout(timeoutId);
+                  reject(new Error("reload failed"));
+                };
                 tmpImg.src = srcUrl;
               });
             } catch (reloadErr) {
-              downloadUrl = await captureElementAsImage(el);
+              // 不再走 SVG foreignObject，直接为文字 fallback 留 null
+              downloadUrl = null;
             }
           }
         } else if (tag === "CANVAS") {
-          try { downloadUrl = el.toDataURL("image/png"); } catch (e3) {}
+          setStatus("正在获取canvas...");
+          downloadUrl = null;
+          // Level 1: 直接 toDataURL（同步，大多数情况）
+          try {
+            downloadUrl = el.toDataURL("image/png");
+          } catch (e1) {
+            // Level 2: 新建 canvas + drawImage（对 WebGL canvas 有效）
+            try {
+              var tmpCv = document.createElement("canvas");
+              tmpCv.width = el.width || r.width;
+              tmpCv.height = el.height || r.height;
+              tmpCv.getContext("2d").drawImage(el, 0, 0);
+              downloadUrl = tmpCv.toDataURL("image/png");
+            } catch (e2) {
+              // Level 3: 查找附近 img 源图（向上最多 5 层）
+              setStatus("查找图片源...");
+              var parent = el.parentElement;
+              var sourceImg = null;
+              for (var pi = 0; pi < 5 && parent; pi++) {
+                var imgs = parent.querySelectorAll("img");
+                for (var ii = 0; ii < imgs.length; ii++) {
+                  if (imgs[ii].naturalWidth >= 100 && imgs[ii].getBoundingClientRect().width >= 20) {
+                    sourceImg = imgs[ii]; break;
+                  }
+                }
+                if (sourceImg) break;
+                parent = parent.parentElement;
+              }
+              if (sourceImg) {
+                downloadUrl = await captureElement(sourceImg);
+              }
+            }
+          }
+          // 若 CSS 显示尺寸与 canvas 内部分辨率不同，缩放到显示尺寸
+          if (downloadUrl) {
+            var nativeW = el.width || r.width;
+            var nativeH = el.height || r.height;
+            if (Math.abs(r.width - nativeW) > 2 || Math.abs(r.height - nativeH) > 2) {
+              try {
+                var scaledUrl = await new Promise(function(resolve) {
+                  var img = new Image();
+                  img.onload = function() {
+                    var cv = document.createElement("canvas");
+                    cv.width = r.width;
+                    cv.height = r.height;
+                    cv.getContext("2d").drawImage(img, 0, 0, r.width, r.height);
+                    resolve(cv.toDataURL("image/png", 0.95));
+                  };
+                  img.src = downloadUrl;
+                });
+                if (scaledUrl) downloadUrl = scaledUrl;
+              } catch (e) {}
+            }
+          }
+          if (!downloadUrl) {
+            setStatus("Canvas 跨域污染，无法捕获", true);
+          }
         } else if (tag === "VIDEO") {
+          setStatus("正在捕获视频帧...");
           var vw = el.videoWidth || r.width, vh = el.videoHeight || r.height;
           var cv2 = document.createElement("canvas");
           cv2.width = vw; cv2.height = vh;
           cv2.getContext("2d").drawImage(el, 0, 0, vw, vh);
           downloadUrl = cv2.toDataURL("image/png", 0.95);
         } else {
-          try {
-            downloadUrl = await captureElementAsImage(el);
-          } catch (svgErr) {
+          // 先尝试 CSS background-image 提取
+          var bgImage = getComputedStyle(el).backgroundImage;
+          if (bgImage && bgImage !== "none" && bgImage.indexOf("linear-gradient") === -1 && bgImage.indexOf("radial-gradient") === -1) {
+            var urlMatch = bgImage.match(/url\(["']?([^"')]+)["']?\)/);
+            if (urlMatch) {
+              var bgUrl = urlMatch[1];
+              setStatus("正在加载背景图...");
+              try {
+                downloadUrl = await new Promise(function(resolve, reject) {
+                  var resolved = false;
+                  var timeoutId = setTimeout(function() {
+                    if (!resolved) { resolved = true; reject(new Error("bg image load timeout")); }
+                  }, 5000);
+                  var tmp = new Image();
+                  tmp.crossOrigin = "anonymous";
+                  tmp.onload = function() {
+                    if (resolved) return;
+                    resolved = true;
+                    clearTimeout(timeoutId);
+                    var cv = document.createElement("canvas");
+                    cv.width = tmp.naturalWidth; cv.height = tmp.naturalHeight;
+                    cv.getContext("2d").drawImage(tmp, 0, 0);
+                    resolve(cv.toDataURL("image/png", 0.95));
+                  };
+                  tmp.onerror = function() {
+                    if (resolved) return;
+                    resolved = true;
+                    clearTimeout(timeoutId);
+                    reject(new Error("background-image load failed"));
+                  };
+                  tmp.src = bgUrl;
+                });
+              } catch (bgErr) {
+                downloadUrl = null;
+              }
+            }
+          }
+          // 若 background-image 未成功，直接文字渲染（不用 SVG foreignObject，从未成功过）
+          if (!downloadUrl) {
             var text = (el.textContent || "").trim();
             if (text.length > 0) {
+              setStatus("正在保存文字...");
               var cv3 = document.createElement("canvas");
               cv3.width = Math.min(r.width, 1200); cv3.height = Math.min(r.height, 800);
               var ctx = cv3.getContext("2d");
@@ -700,13 +976,11 @@ function injectImageCapture(partNumber) {
           }
         }
 
-        if (downloadUrl) {
-          try { chrome.runtime.sendMessage({ action: "downloadImage", url: downloadUrl, filename: partNumber + ".png" }); } catch (e4) {}
-        }
-        window.__img_capture_timer = setTimeout(cleanup, 300);
+        // 返回 downloadUrl（null 表示所有路径都失败）
+        return downloadUrl || null;
       } catch (err) {
         console.error("captureElement:", err);
-        cleanup();
+        throw err;
       }
     }
 
@@ -715,8 +989,37 @@ function injectImageCapture(partNumber) {
     // ================================================================
     function onMouseMove(e) {
       if (window.__img_capture_gen !== currentGen) return;
+      if (window.__imgc_capturing) return; // 捕获进行中，冻结 overlay
       var el = getElementAtPoint(e.clientX, e.clientY);
-      if (el) { hoveredEl = el; }
+      if (el) {
+        hoveredEl = el;
+        var r = el.getBoundingClientRect();
+        // 更新 overlay 位置（position:fixed 直接对应视口坐标）
+        overlay.style.left = r.left + "px";
+        overlay.style.top = r.top + "px";
+        overlay.style.width = r.width + "px";
+        overlay.style.height = r.height + "px";
+        overlay.style.display = "block";
+        // 更新标签内容（防 XSS 用 textContent）
+        var tag = el.tagName;
+        var info = tag;
+        if (tag === "IMG" && el.naturalWidth) {
+          info = "IMG · " + el.naturalWidth + "×" + el.naturalHeight;
+        } else if (tag === "CANVAS") {
+          info = "CANVAS · " + el.width + "×" + el.height;
+        } else if (tag === "VIDEO") {
+          info = "VIDEO · " + (el.videoWidth || "?") + "×" + (el.videoHeight || "?");
+        }
+        labelEl.textContent = info;
+        // 标签定位在 overlay 上方
+        labelEl.style.left = r.left + "px";
+        labelEl.style.top = Math.max(0, r.top - 22) + "px";
+        labelEl.style.display = "block";
+      } else {
+        hoveredEl = null;
+        overlay.style.display = "none";
+        labelEl.style.display = "none";
+      }
     }
 
     function onClick(e) {
@@ -725,8 +1028,57 @@ function injectImageCapture(partNumber) {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+      // 冻结 overlay，防止捕获过程中鼠标移动导致 overlay 重新出现
+      window.__imgc_capturing = true;
+      overlay.style.borderColor = "rgba(26,115,232,0.4)";
+      overlay.style.background = "rgba(26,115,232,0.02)";
+      labelEl.style.opacity = "0.6";
       var el = hoveredEl;
-      setTimeout(function () { captureElement(el); }, 120);
+      setStatus("正在捕获...");
+      // 直接调用（内部为异步），去掉 setTimeout
+      captureElement(el).then(async function(downloadUrl) {
+        if (!downloadUrl) {
+          // 首次失败，延迟 300ms 重试一次（给懒加载/初始化留时间）
+          setStatus("首次失败，重试中...");
+          await new Promise(function(r) { setTimeout(r, 300); });
+          downloadUrl = await captureElement(el);
+        }
+        if (!downloadUrl) {
+          setStatus("捕获失败：无法渲染该元素", true);
+          window.__img_capture_timer = setTimeout(cleanup, 2000);
+          return;
+        }
+        setStatus("正在保存...");
+        // 带超时的 sendMessage 回调
+        var resolved = false;
+        var timeoutId = setTimeout(function() {
+          if (!resolved) { resolved = true; setStatus("保存超时", true); cleanup(); }
+        }, 5000);
+        try {
+          chrome.runtime.sendMessage(
+            { action: "downloadImage", url: downloadUrl, filename: partNumber + ".png" },
+            function(response) {
+              if (resolved) return;
+              resolved = true;
+              clearTimeout(timeoutId);
+              if (chrome.runtime.lastError) {
+                setStatus("下载失败: " + chrome.runtime.lastError.message, true);
+              } else if (response && response.success) {
+                setStatus("已保存 ✓", false);
+              } else {
+                setStatus("下载失败", true);
+              }
+              window.__img_capture_timer = setTimeout(cleanup, 1500);
+            }
+          );
+        } catch (e4) {
+          if (!resolved) { resolved = true; clearTimeout(timeoutId); setStatus("发送失败", true); }
+          window.__img_capture_timer = setTimeout(cleanup, 1500);
+        }
+      }).catch(function(err) {
+        setStatus("捕获失败: " + (err && err.message ? err.message : err), true);
+        window.__img_capture_timer = setTimeout(cleanup, 2000);
+      });
     }
 
     function onKeyDown(e) {
@@ -734,6 +1086,7 @@ function injectImageCapture(partNumber) {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         cleanup();
       }
     }
@@ -747,10 +1100,13 @@ function injectImageCapture(partNumber) {
     // ================================================================
     // 启动事件监听
     // ================================================================
-    document.addEventListener("mousemove", onMouseMove, true);
-    document.addEventListener("click", onClick, true);
-    document.addEventListener("keydown", onKeyDown, true);
-    document.addEventListener("contextmenu", onContextMenu, true);
+    window.addEventListener("mousemove", onMouseMove, true);
+    window.addEventListener("click", onClick, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("contextmenu", onContextMenu, true);
+
+    // 确保焦点在页面上，使键盘事件（Esc）能到达
+    window.focus();
 
     console.log("[截图捕获] 注入成功");
   } catch (err) {
