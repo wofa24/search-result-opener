@@ -366,16 +366,22 @@ async function startImageCapture() {
     if (data.currentGroup && data.currentGroup.tabIds && data.currentGroup.tabIds.includes(tab.id)) {
       partNumber = data.currentGroup.partNumber || "capture";
     } else {
-      // 不是批量打开的标签页，从 URL 提取有意义的文件名
+      // 不是批量打开的标签页
       try {
         const url = new URL(tab.url);
-        const pathParts = url.pathname.split("/").filter(Boolean);
-        const lastPath = pathParts.length > 0 ? pathParts[pathParts.length - 1] : "";
-        // 如果最后一段路径像文件名，使用它；否则用 hostname
-        if (lastPath && /\.[a-z0-9]+$/i.test(lastPath)) {
-          partNumber = lastPath.replace(/\.[^.]+$/, "").replace(/[<>:"/\|?*]/g, "_") || "capture";
+        // 优先从搜索 URL 提取搜索词作为文件名
+        const q = url.searchParams.get("q");
+        if (q && (url.hostname.includes("bing.com") || url.hostname.includes("google.com"))) {
+          partNumber = q.trim().replace(/\s+/g, "") || "capture";
         } else {
-          partNumber = url.hostname.replace(/^www\./, "").replace(/[<>:"/\|?*]/g, "_") || "capture";
+          // 从 URL 路径提取有意义的文件名
+          const pathParts = url.pathname.split("/").filter(Boolean);
+          const lastPath = pathParts.length > 0 ? pathParts[pathParts.length - 1] : "";
+          if (lastPath && /\.[a-z0-9]+$/i.test(lastPath)) {
+            partNumber = lastPath.replace(/\.[^.]+$/, "").replace(/[<>:"/\|?*]/g, "_") || "capture";
+          } else {
+            partNumber = url.hostname.replace(/^www\./, "").replace(/[<>:"/\|?*]/g, "_") || "capture";
+          }
         }
       } catch (e) {
         partNumber = "capture";
@@ -915,7 +921,7 @@ function injectImageCapture(partNumber) {
           cv2.getContext("2d").drawImage(el, 0, 0, vw, vh);
           downloadUrl = cv2.toDataURL("image/png", 0.95);
         } else {
-          // 先尝试 CSS background-image 提取
+          // 非媒体元素：先尝试 CSS background-image，失败后用 captureVisibleTab
           var bgImage = getComputedStyle(el).backgroundImage;
           if (bgImage && bgImage !== "none" && bgImage.indexOf("linear-gradient") === -1 && bgImage.indexOf("radial-gradient") === -1) {
             var urlMatch = bgImage.match(/url\(["']?([^"')]+)["']?\)/);
@@ -952,26 +958,52 @@ function injectImageCapture(partNumber) {
               }
             }
           }
-          // 若 background-image 未成功，直接文字渲染（不用 SVG foreignObject，从未成功过）
+          // background-image 失败 → 用 captureVisibleTab 截图
           if (!downloadUrl) {
-            var text = (el.textContent || "").trim();
-            if (text.length > 0) {
-              setStatus("正在保存文字...");
-              var cv3 = document.createElement("canvas");
-              cv3.width = Math.min(r.width, 1200); cv3.height = Math.min(r.height, 800);
-              var ctx = cv3.getContext("2d");
-              ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv3.width, cv3.height);
-              ctx.fillStyle = "#333"; ctx.font = "14px system-ui,'Microsoft YaHei',sans-serif";
-              var line = "", y = 20;
-              var chars = text.split("");
-              for (var ci = 0; ci < chars.length; ci++) {
-                if (ctx.measureText(line + chars[ci]).width > cv3.width - 40) {
-                  ctx.fillText(line, 20, y); line = chars[ci]; y += 22;
-                  if (y > cv3.height - 20) break;
-                } else { line += chars[ci]; }
-              }
-              if (line && y <= cv3.height - 20) ctx.fillText(line, 20, y);
-              downloadUrl = cv3.toDataURL("image/png", 0.95);
+            setStatus("正在截图...");
+            try {
+              downloadUrl = await new Promise(function(resolve, reject) {
+                var timeoutId = setTimeout(function() {
+                  reject(new Error("capture timeout"));
+                }, 10000);
+                chrome.runtime.sendMessage({ action: "captureTab" }, function(response) {
+                  clearTimeout(timeoutId);
+                  if (!response || !response.success) {
+                    reject(new Error(response ? response.error : "capture failed"));
+                    return;
+                  }
+                  var dpr = window.devicePixelRatio || 1;
+                  var vw = window.innerWidth;
+                  var vh = window.innerHeight;
+                  // 重新获取元素位置（避免异步延迟导致的坐标偏移）
+                  var rect = el.getBoundingClientRect();
+                  // 裁剪区域 clamp 到视口内
+                  var sx = Math.max(0, rect.left) * dpr;
+                  var sy = Math.max(0, rect.top) * dpr;
+                  var sw = Math.min(rect.width, vw - Math.max(0, rect.left)) * dpr;
+                  var sh = Math.min(rect.height, vh - Math.max(0, rect.top)) * dpr;
+                  if (sw <= 0 || sh <= 0) {
+                    reject(new Error("element outside viewport"));
+                    return;
+                  }
+                  var img = new Image();
+                  img.onload = function() {
+                    var cv = document.createElement("canvas");
+                    cv.width = sw / dpr;
+                    cv.height = sh / dpr;
+                    var ctx = cv.getContext("2d");
+                    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+                    resolve(cv.toDataURL("image/png", 0.95));
+                  };
+                  img.onerror = function() {
+                    reject(new Error("failed to load screenshot"));
+                  };
+                  img.src = response.dataUrl;
+                });
+              });
+            } catch (captureErr) {
+              console.error("captureVisibleTab failed:", captureErr);
+              downloadUrl = null;
             }
           }
         }

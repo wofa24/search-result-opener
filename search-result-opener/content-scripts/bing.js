@@ -18,21 +18,10 @@ extractSearchLinks = function (count) {
     document.querySelectorAll("#b_results .b_algo, .b_algo"),
   );
   for (const item of items) {
-    const anchor = item.querySelector("h2 a, h3 a, a[href]");
+    const anchor = item.querySelector("h2 a, h3 a");
     if (!anchor || !anchor.href) continue;
     const url = anchor.href;
     if (!url.startsWith("http")) continue;
-    // 跳过图片 URL
-    try {
-      var pn = new URL(url).pathname.toLowerCase();
-      if (/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)/i.test(pn)) continue;
-    } catch (e) {}
-    if (
-      url.includes("googleusercontent.com") ||
-      url.includes("encrypted-tbn0.gstatic.com")
-    )
-      continue;
-    if (url.includes("bing.com/th?id=")) continue;
     if (
       url.includes("bing.com/search") ||
       url.includes("bing.com/aclick") ||
