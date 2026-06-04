@@ -61,20 +61,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// 独立监听 captureTab：用 captureVisibleTab 获取可见区域截图（不和上面 if/else 链混用）
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action !== "captureTab") return;
-  const windowId = sender.tab ? sender.tab.windowId : undefined;
-  chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
-    if (chrome.runtime.lastError) {
-      sendResponse({ success: false, error: chrome.runtime.lastError.message });
-    } else {
-      sendResponse({ success: true, dataUrl });
-    }
-  });
-  return true;
-});
-
 // 监听快捷键命令（多页提取模式，与 popup 点击确认打开逻辑一致）
 chrome.commands.onCommand.addListener(async (command) => {
   if (command === "quick-open-results") {

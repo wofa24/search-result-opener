@@ -39,12 +39,50 @@ function setupEventListeners() {
     loadTabGroup();
   });
 
-  // 监听存储变化（当新搜索发起时，currentGroup 会更新）
+  // 监听存储变化（当新搜索发起时，currentGroup 会更新；_capReq 触发截图）
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.currentGroup) {
       loadTabGroup();
     }
+    if (changes._capReq && changes._capReq.newValue) {
+      handleCaptureRequest(changes._capReq.newValue);
+    }
   });
+
+  async function handleCaptureRequest(req) {
+    const { rect, dpr, fn, ts } = req;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) throw new Error("无法获取当前标签页");
+      const dataUrl = await new Promise((resolve, reject) => {
+        chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }, (result) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(result);
+        });
+      });
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("加载截图失败"));
+        i.src = dataUrl;
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, rect.left * dpr, rect.top * dpr, rect.width * dpr, rect.height * dpr, 0, 0, rect.width, rect.height);
+      const croppedUrl = canvas.toDataURL("image/png", 0.95);
+      await new Promise((resolve, reject) => {
+        chrome.downloads.download({ url: croppedUrl, filename: fn, saveAs: true }, (downloadId) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(downloadId);
+        });
+      });
+      chrome.storage.local.set({ _capRes: { success: true, ts } });
+    } catch (err) {
+      chrome.storage.local.set({ _capRes: { success: false, error: err.message, ts } });
+    }
+  }
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === "complete" || changeInfo.title) {
@@ -958,7 +996,7 @@ function injectImageCapture(partNumber) {
               }
             }
           }
-          // background-image 失败 → captureVisibleTab 截图（background 独立 listener 处理）
+          // background-image 失败 → storage 通信让侧边栏截图+裁剪+下载
           if (!downloadUrl) {
             setStatus("正在截图...");
             try {
@@ -966,38 +1004,37 @@ function injectImageCapture(partNumber) {
               var capRect = el.getBoundingClientRect();
               var vw = window.innerWidth;
               var vh = window.innerHeight;
-              var sx = Math.max(0, capRect.left) * capDpr;
-              var sy = Math.max(0, capRect.top) * capDpr;
-              var sw = Math.min(capRect.width, vw - Math.max(0, capRect.left)) * capDpr;
-              var sh = Math.min(capRect.height, vh - Math.max(0, capRect.top)) * capDpr;
-              if (sw <= 0 || sh <= 0) throw new Error("element outside viewport");
-              downloadUrl = await new Promise(function(resolve, reject) {
-                var timeoutId = setTimeout(function() {
-                  reject(new Error("capture timeout"));
-                }, 10000);
-                chrome.runtime.sendMessage({ action: "captureTab" }, function(response) {
-                  clearTimeout(timeoutId);
-                  if (!response || !response.success) {
-                    reject(new Error(response ? response.error : "capture failed"));
-                    return;
-                  }
-                  var img = new Image();
-                  img.onload = function() {
-                    var cv = document.createElement("canvas");
-                    cv.width = sw / capDpr;
-                    cv.height = sh / capDpr;
-                    var ctx = cv.getContext("2d");
-                    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
-                    resolve(cv.toDataURL("image/png", 0.95));
-                  };
-                  img.onerror = function() {
-                    reject(new Error("failed to decode screenshot"));
-                  };
-                  img.src = response.dataUrl;
+              var clipRect = {
+                left: Math.max(0, capRect.left),
+                top: Math.max(0, capRect.top),
+                width: Math.min(capRect.width, vw - Math.max(0, capRect.left)),
+                height: Math.min(capRect.height, vh - Math.max(0, capRect.top))
+              };
+              if (clipRect.width <= 0 || clipRect.height <= 0) throw new Error("element outside viewport");
+              var ts = Date.now();
+              await new Promise(function(resolve, reject) {
+                chrome.storage.local.set({ _capReq: { rect: clipRect, dpr: capDpr, fn: partNumber + ".png", ts: ts } }, function() {
+                  if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+                  var count = 0;
+                  var poll = setInterval(function() {
+                    count++;
+                    chrome.storage.local.get('_capRes', function(data) {
+                      if (data._capRes && data._capRes.ts === ts) {
+                        clearInterval(poll);
+                        chrome.storage.local.remove('_capRes');
+                        if (data._capRes.success) resolve();
+                        else reject(new Error(data._capRes.error || "capture failed"));
+                      } else if (count >= 50) {
+                        clearInterval(poll);
+                        reject(new Error("capture timeout"));
+                      }
+                    });
+                  }, 200);
                 });
               });
+              downloadUrl = "__captured__";
             } catch (captureErr) {
-              console.error("captureTab failed:", captureErr);
+              console.error("captureStorage failed:", captureErr);
               downloadUrl = null;
             }
           }
@@ -1073,6 +1110,11 @@ function injectImageCapture(partNumber) {
         if (!downloadUrl) {
           setStatus("捕获失败：无法渲染该元素", true);
           window.__img_capture_timer = setTimeout(cleanup, 2000);
+          return;
+        }
+        if (downloadUrl === "__captured__") {
+          setStatus("已保存 ✓", false);
+          window.__img_capture_timer = setTimeout(cleanup, 1500);
           return;
         }
         setStatus("正在保存...");
