@@ -39,50 +39,12 @@ function setupEventListeners() {
     loadTabGroup();
   });
 
-  // 监听存储变化（当新搜索发起时，currentGroup 会更新；_capReq 触发截图）
+  // 监听存储变化（当新搜索发起时，currentGroup 会更新）
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.currentGroup) {
       loadTabGroup();
     }
-    if (changes._capReq && changes._capReq.newValue) {
-      handleCaptureRequest(changes._capReq.newValue);
-    }
   });
-
-  async function handleCaptureRequest(req) {
-    const { rect, dpr, fn, ts } = req;
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) throw new Error("无法获取当前标签页");
-      const dataUrl = await new Promise((resolve, reject) => {
-        chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }, (result) => {
-          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-          else resolve(result);
-        });
-      });
-      const img = await new Promise((resolve, reject) => {
-        const i = new Image();
-        i.onload = () => resolve(i);
-        i.onerror = () => reject(new Error("加载截图失败"));
-        i.src = dataUrl;
-      });
-      const canvas = document.createElement("canvas");
-      canvas.width = rect.width;
-      canvas.height = rect.height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, rect.left * dpr, rect.top * dpr, rect.width * dpr, rect.height * dpr, 0, 0, rect.width, rect.height);
-      const croppedUrl = canvas.toDataURL("image/png", 0.95);
-      await new Promise((resolve, reject) => {
-        chrome.downloads.download({ url: croppedUrl, filename: fn, saveAs: true }, (downloadId) => {
-          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-          else resolve(downloadId);
-        });
-      });
-      chrome.storage.local.set({ _capRes: { success: true, ts } });
-    } catch (err) {
-      chrome.storage.local.set({ _capRes: { success: false, error: err.message, ts } });
-    }
-  }
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === "complete" || changeInfo.title) {
@@ -426,7 +388,7 @@ async function startImageCapture() {
       }
     }
     // 去除料号中的空格
-    partNumber = partNumber.replace(/\s+/g, "");
+    partNumber = partNumber.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "");
 
     console.log("[截图捕获] 正在注入到标签页", tab.id, tab.url, "partNumber:", partNumber);
     const injectResult = await chrome.scripting.executeScript({
@@ -563,112 +525,50 @@ function injectImageCapture(partNumber) {
       return false;
     }
 
-    // 修正 Bug 2：优先返回媒体元素，解决放大镜/缩放图片无法捕获的问题
-    function getMeaningfulElement(el) {
-      if (!el) return null;
-      var tag = el.tagName;
-      var r = el.getBoundingClientRect();
-
-      if (/^(IMG|VIDEO|CANVAS|SVG)$/i.test(tag) && r.width >= 20 && r.height >= 20) {
-        return el;
-      }
-
-      var cur = el;
-      while (cur && cur !== document.body && cur !== document.documentElement) {
-        var cr = cur.getBoundingClientRect();
-        var display = getComputedStyle(cur).display;
-        var isBlock = display === "block" || display === "flex" || display === "grid" ||
-                      display === "inline-block" || display === "inline-flex" || display === "table";
-        var hasContent = (cur.querySelector("img, svg, video, canvas"));
-        var isListOrCard = /^(LI|ARTICLE|SECTION|DIV|MAIN|ASIDE|HEADER|FOOTER|NAV|FIGURE|FORM)$/i.test(cur.tagName);
-
-        // 检查 CSS background-image（用于捕获背景图容器）
-        var bgImage = getComputedStyle(cur).backgroundImage;
-        var hasBgImage = bgImage && bgImage !== "none" && bgImage.indexOf("url(") !== -1;
-
-        if (isBlock || isListOrCard || hasContent || hasBgImage || cr.width >= 100 || cr.height >= 40) {
-          var curTag = cur.tagName;
-          if (!/^(IMG|VIDEO|CANVAS|SVG)$/i.test(curTag)) {
-            var imgs = cur.querySelectorAll("img, video, canvas");
-            // 优先穿透：如果只有一个子媒体元素，返回它
-            if (imgs.length === 1) {
-              var ir = imgs[0].getBoundingClientRect();
-              if (ir.width >= 20 && ir.height >= 20) {
-                return imgs[0];
-              }
-            }
-            // 多子媒体元素时：优先查找占据主要面积的 canvas（360°查看器常见模式）
-            if (imgs.length > 1) {
-              for (var mi = 0; mi < imgs.length; mi++) {
-                var mEl = imgs[mi];
-                if (mEl.tagName === "CANVAS") {
-                  var mr = mEl.getBoundingClientRect();
-                  if (mr.width >= 100 && mr.height >= 100) {
-                    var areaRatio2 = (mr.width * mr.height) / (cr.width * cr.height);
-                    if (areaRatio2 >= 0.5) {
-                      return mEl;
-                    }
-                  }
-                }
-              }
-            }
-            // 如果有背景图但无子媒体元素，返回容器本身（交给 captureElement 的 background-image 路径）
-            if (hasBgImage && imgs.length === 0 && /^(DIV|LI|A|SPAN)$/i.test(curTag)) {
-              return cur;
-            }
-          }
-          return cur;
-        }
-        cur = cur.parentElement;
-      }
-      return el;
-    }
-
-    // 修正 Bug 2：两遍扫描 — 第一遍优先找媒体元素
     function getElementAtPoint(x, y) {
       var all = document.elementsFromPoint(x, y);
       if (!all || all.length === 0) return null;
 
-      // 第一遍：优先找媒体元素
+      // 第一遍：原图绝对优先！找媒体元素，无视上面的遮罩层（保障你的核心需求：存图）
       for (var i = 0; i < all.length; i++) {
         var el = all[i];
         if (!el || el === document.body || el === document.documentElement) continue;
         if (OUR_IDS[el.id]) continue;
         if (/^(IMG|VIDEO|CANVAS)$/i.test(el.tagName)) {
           var rr = el.getBoundingClientRect();
-          // canvas 放宽阈值（360°查看器的 canvas 可能较小）
-          var minW = el.tagName === "CANVAS" ? 10 : 20;
-          var minH = el.tagName === "CANVAS" ? 10 : 20;
+          var minW = el.tagName === 'CANVAS' ? 10 : 20;
+          var minH = el.tagName === 'CANVAS' ? 10 : 20;
           if (rr.width >= minW && rr.height >= minH) {
             return el;
           }
         }
       }
 
-      // 第二遍：常规元素查找（跳过 zoom lens 遮罩）
-      var ZOOM_LENS_CLASSES = ["zoom-lens", "zoomLens", "cloud-zoom-lens", "img-zoom-lens",
-                               "magnify-lens", "magnifier-lens", "zoomContainer", "zoomWindow"];
+      // 第二遍：如果没有图片，就抓取鼠标当前指着的任意有效非透明元素（满足你的强迫症：存万物）
+      var ZOOM_LENS_CLASSES = ['zoom-lens', 'zoomLens', 'cloud-zoom-lens', 'img-zoom-lens',
+                               'magnify-lens', 'magnifier-lens', 'zoomContainer', 'zoomWindow'];
       for (var j = 0; j < all.length; j++) {
         var el2 = all[j];
         if (!el2 || el2 === document.body || el2 === document.documentElement) continue;
         if (OUR_IDS[el2.id]) continue;
-        // 跳过 zoom lens 遮罩层（不修改 DOM，仅在元素选择时过滤）
+        // 过滤专门的放大镜遮罩层
         var isZoomLens = false;
-        var elClass = el2.className || "";
-        if (typeof elClass === "string") {
+        var elClass = el2.className || '';
+        if (typeof elClass === 'string') {
           for (var z = 0; z < ZOOM_LENS_CLASSES.length; z++) {
             if (elClass.indexOf(ZOOM_LENS_CLASSES[z]) !== -1) { isZoomLens = true; break; }
           }
         }
         if (isZoomLens) continue;
-        // 跳过透明/隐藏/极小元素（遮罩层常见特征）
+        // 过滤全透明的不可见遮罩
         try {
           var el2Style = getComputedStyle(el2);
-          if (el2Style.opacity === "0" || el2Style.visibility === "hidden") continue;
+          if (el2Style.opacity === '0' || el2Style.visibility === 'hidden') continue;
         } catch (e) {}
         var rr2 = el2.getBoundingClientRect();
-        if (rr2.width > 1 && rr2.height > 1) {
-          return getMeaningfulElement(el2);
+        // 只要有尺寸，不再往里乱挖，直接返回你选中的这个元素
+        if (rr2.width > 0 && rr2.height > 0) {
+          return el2;
         }
       }
       return null;
@@ -814,42 +714,99 @@ function injectImageCapture(partNumber) {
       });
     }
 
+
+    // ================================================================
+    // Canvas 文字渲染兜底（零外部依赖，100% 可靠）
+    // ================================================================
+    function renderElementToCanvas(el) {
+      var rect = el.getBoundingClientRect();
+      var dpr = window.devicePixelRatio || 1;
+      var w = Math.round(rect.width), h = Math.round(rect.height);
+      if (w <= 0 || h <= 0) return null;
+
+      var maxD = 3000;
+      var scale = Math.min(1, maxD / Math.max(w, h));
+      var cw = Math.round(w * dpr * scale), ch = Math.round(h * dpr * scale);
+
+      var canvas = document.createElement("canvas");
+      canvas.width = cw;
+      canvas.height = ch;
+      var ctx = canvas.getContext("2d");
+      ctx.scale(dpr * scale, dpr * scale);
+
+      var style = getComputedStyle(el);
+
+      // 背景
+      var bg = style.backgroundColor;
+      if (!bg || bg === "rgba(0, 0, 0, 0)" || bg === "transparent") {
+        bg = "#ffffff";
+      }
+      ctx.fillStyle = bg;
+      var radius = parseFloat(style.borderRadius) || 0;
+      if (radius > 0) {
+        ctx.beginPath();
+        ctx.moveTo(radius, 0);
+        ctx.lineTo(w - radius, 0);
+        ctx.arcTo(w, 0, w, radius, radius);
+        ctx.lineTo(w, h - radius);
+        ctx.arcTo(w, h, w - radius, h, radius);
+        ctx.lineTo(radius, h);
+        ctx.arcTo(0, h, 0, h - radius, radius);
+        ctx.lineTo(0, radius);
+        ctx.arcTo(0, 0, radius, 0, radius);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // 文字
+      var text = (el.textContent || "").trim();
+      if (text) {
+        var color = style.color;
+        if (!color || color === "rgba(0, 0, 0, 0)") color = "#000000";
+        ctx.fillStyle = color;
+        ctx.font = (style.fontStyle || "normal") + " " +
+                   (style.fontWeight || "normal") + " " +
+                   (style.fontSize || "14px") + " " +
+                   (style.fontFamily || "sans-serif");
+        ctx.textBaseline = "top";
+
+        var padLeft = parseFloat(style.paddingLeft) || 8;
+        var padRight = parseFloat(style.paddingRight) || 8;
+        var padTop = parseFloat(style.paddingTop) || 8;
+        var lineHeight = parseFloat(style.lineHeight);
+        if (isNaN(lineHeight) || lineHeight < 1) lineHeight = parseFloat(style.fontSize) * 1.4 || 20;
+        var maxWidth = w - padLeft - padRight;
+        if (maxWidth < 10) maxWidth = w - 4;
+
+        var x = padLeft, y = padTop;
+        var chars = text.split('');
+        var line = '';
+        for (var i = 0; i < chars.length; i++) {
+          var testLine = line + chars[i];
+          if (ctx.measureText(testLine).width > maxWidth && line.length > 0) {
+            ctx.fillText(line, x, y);
+            y += lineHeight;
+            line = chars[i];
+          } else {
+            line = testLine;
+          }
+        }
+        if (line) ctx.fillText(line, x, y);
+      }
+
+      return canvas.toDataURL("image/png", 0.95);
+    }
+
     // ================================================================
     // 元素截图入口（修正 Bug 2：容器内图片穿透）
     // 返回: Promise<string|null> — 成功返回 dataURL，失败返回 null
     // ================================================================
-    async function captureElement(el) {
-      // 修正 Bug 2+：若捕获目标不是媒体元素，找 DIV 内最佳子图片
-      // 不再依赖面积比（areaRatio >= 0.3 容易漏掉卡片布局中的产品图），
-      // 而是遍历所有子 img，按显示面积排序选最大的，保底也检查 video/canvas
-      var tag = el.tagName;
-      if (!/^(IMG|VIDEO|CANVAS|SVG)$/i.test(tag)) {
-        var bestChild = null, bestArea = 0;
-        var allChildImgs = el.querySelectorAll("img");
-        for (var ci = 0; ci < allChildImgs.length; ci++) {
-          var cImg = allChildImgs[ci];
-          var cr = cImg.getBoundingClientRect();
-          // 跳过极小图 / 占位图 / 懒加载 1×1 占位
-          if (cr.width < 30 || cr.height < 30) continue;
-          if (cImg.naturalWidth === 1 && cImg.naturalHeight === 1) continue;
-          var ca = cr.width * cr.height;
-          if (ca > bestArea) { bestArea = ca; bestChild = cImg; }
-        }
-        // 无合适 img 时检查 video / canvas
-        if (!bestChild) {
-          var childMedia = el.querySelector("video, canvas");
-          if (childMedia) {
-            var cmr = childMedia.getBoundingClientRect();
-            if (cmr.width >= 20 && cmr.height >= 20) { bestChild = childMedia; }
-          }
-        }
-        // 穿透到最佳子元素
-        if (bestChild) {
-          el = bestChild;
-          tag = el.tagName;
-        }
-      }
-
+        async function captureElement(el) {
+      // 不再强行挖掘子节点。因为若是图片，getElementAtPoint 第一步就已经选中了；
+      // 若传到这里不是图片，说明用户就是要保存这个纯文本或卡片！
+      var tag = el.tagName.toUpperCase();
       var r = el.getBoundingClientRect();
       var downloadUrl = null;
 
@@ -996,7 +953,7 @@ function injectImageCapture(partNumber) {
               }
             }
           }
-          // background-image 失败 → storage 通信让侧边栏截图+裁剪+下载
+          // background-image 失败 → 后台 Service Worker 截屏 + 本地裁剪
           if (!downloadUrl) {
             setStatus("正在截图...");
             try {
@@ -1010,35 +967,42 @@ function injectImageCapture(partNumber) {
                 width: Math.min(capRect.width, vw - Math.max(0, capRect.left)),
                 height: Math.min(capRect.height, vh - Math.max(0, capRect.top))
               };
-              if (clipRect.width <= 0 || clipRect.height <= 0) throw new Error("element outside viewport");
-              var ts = Date.now();
-              await new Promise(function(resolve, reject) {
-                chrome.storage.local.set({ _capReq: { rect: clipRect, dpr: capDpr, fn: partNumber + ".png", ts: ts } }, function() {
-                  if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-                  var count = 0;
-                  var poll = setInterval(function() {
-                    count++;
-                    chrome.storage.local.get('_capRes', function(data) {
-                      if (data._capRes && data._capRes.ts === ts) {
-                        clearInterval(poll);
-                        chrome.storage.local.remove('_capRes');
-                        if (data._capRes.success) resolve();
-                        else reject(new Error(data._capRes.error || "capture failed"));
-                      } else if (count >= 50) {
-                        clearInterval(poll);
-                        reject(new Error("capture timeout"));
-                      }
-                    });
-                  }, 200);
+              if (clipRect.width <= 0 || clipRect.height <= 0) throw new Error("元素在可视区域外");
+
+              // 1. 呼叫后台 Service Worker 索要当前屏幕的高清原图
+              var fullScreenDataUrl = await new Promise(function(resolve, reject) {
+                chrome.runtime.sendMessage({ action: "captureViewport" }, function(res) {
+                  if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                  else if (!res || !res.success) reject(new Error(res ? res.error : "截屏API无响应"));
+                  else resolve(res.dataUrl);
                 });
               });
-              downloadUrl = "__captured__";
+
+              // 2. 本地裁剪出鼠标指向的元素
+              downloadUrl = await new Promise(function(resolve, reject) {
+                var img = new Image();
+                img.onload = function() {
+                  var cv = document.createElement("canvas");
+                  cv.width = clipRect.width * capDpr;
+                  cv.height = clipRect.height * capDpr;
+                  var ctx = cv.getContext("2d");
+                  ctx.drawImage(img,
+                    clipRect.left * capDpr, clipRect.top * capDpr, clipRect.width * capDpr, clipRect.height * capDpr,
+                    0, 0, cv.width, cv.height
+                  );
+                  resolve(cv.toDataURL("image/png", 0.95));
+                };
+                img.onerror = function() { reject(new Error("裁剪图片数据加载失败")); };
+                img.src = fullScreenDataUrl;
+              });
+
             } catch (captureErr) {
-              console.error("captureStorage failed:", captureErr);
-              downloadUrl = null;
+              console.error("captureViewport failed:", captureErr);
+              throw new Error("截屏操作失败: " + (captureErr.message || "未知异常"));
             }
           }
         }
+
 
         // 返回 downloadUrl（null 表示所有路径都失败）
         return downloadUrl || null;
@@ -1110,11 +1074,6 @@ function injectImageCapture(partNumber) {
         if (!downloadUrl) {
           setStatus("捕获失败：无法渲染该元素", true);
           window.__img_capture_timer = setTimeout(cleanup, 2000);
-          return;
-        }
-        if (downloadUrl === "__captured__") {
-          setStatus("已保存 ✓", false);
-          window.__img_capture_timer = setTimeout(cleanup, 1500);
           return;
         }
         setStatus("正在保存...");

@@ -58,6 +58,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       },
     );
     return true;
+  } else if (request.action === "captureViewport") {
+    // 后台截屏：由永远在线的 Service Worker 调用高权限 API
+    chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: "png" }, (dataUrl) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ success: false, error: chrome.runtime.lastError.message });
+      } else {
+        sendResponse({ success: true, dataUrl: dataUrl });
+      }
+    });
+    return true;
   }
 });
 
