@@ -46,48 +46,6 @@ function setupEventListeners() {
     }
   });
 
-  // 监听捕获请求：侧边栏直接截图 + 裁剪 + 下载（不走 service worker）
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action !== "captureRequest") return;
-    (async () => {
-      try {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!activeTab) throw new Error("无法获取当前标签页");
-        const dataUrl = await new Promise((resolve, reject) => {
-          chrome.tabs.captureVisibleTab(activeTab.windowId, { format: "png" }, (result) => {
-            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-            else resolve(result);
-          });
-        });
-        // 裁剪到元素区域
-        const { rect, dpr } = request;
-        const img = await new Promise((resolve, reject) => {
-          const i = new Image();
-          i.onload = () => resolve(i);
-          i.onerror = () => reject(new Error("加载截图失败"));
-          i.src = dataUrl;
-        });
-        const canvas = document.createElement("canvas");
-        canvas.width = rect.width;
-        canvas.height = rect.height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, rect.left * dpr, rect.top * dpr, rect.width * dpr, rect.height * dpr, 0, 0, rect.width, rect.height);
-        const croppedUrl = canvas.toDataURL("image/png", 0.95);
-        // 直接下载
-        await new Promise((resolve, reject) => {
-          chrome.downloads.download({ url: croppedUrl, filename: request.filename, saveAs: true }, (downloadId) => {
-            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-            else resolve(downloadId);
-          });
-        });
-        sendResponse({ success: true });
-      } catch (err) {
-        sendResponse({ success: false, error: err.message });
-      }
-    })();
-    return true;
-  });
-
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === "complete" || changeInfo.title) {
       loadTabGroup();
@@ -1000,7 +958,7 @@ function injectImageCapture(partNumber) {
               }
             }
           }
-          // background-image 失败 → 侧边栏 captureVisibleTab 截图
+          // background-image 失败 → captureVisibleTab 截图（background 独立 listener 处理）
           if (!downloadUrl) {
             setStatus("正在截图...");
             try {
@@ -1008,37 +966,38 @@ function injectImageCapture(partNumber) {
               var capRect = el.getBoundingClientRect();
               var vw = window.innerWidth;
               var vh = window.innerHeight;
-              var clipRect = {
-                left: Math.max(0, capRect.left),
-                top: Math.max(0, capRect.top),
-                width: Math.min(capRect.width, vw - Math.max(0, capRect.left)),
-                height: Math.min(capRect.height, vh - Math.max(0, capRect.top))
-              };
-              if (clipRect.width <= 0 || clipRect.height <= 0) {
-                throw new Error("element outside viewport");
-              }
-              await new Promise(function(resolve, reject) {
+              var sx = Math.max(0, capRect.left) * capDpr;
+              var sy = Math.max(0, capRect.top) * capDpr;
+              var sw = Math.min(capRect.width, vw - Math.max(0, capRect.left)) * capDpr;
+              var sh = Math.min(capRect.height, vh - Math.max(0, capRect.top)) * capDpr;
+              if (sw <= 0 || sh <= 0) throw new Error("element outside viewport");
+              downloadUrl = await new Promise(function(resolve, reject) {
                 var timeoutId = setTimeout(function() {
                   reject(new Error("capture timeout"));
                 }, 10000);
-                chrome.runtime.sendMessage({
-                  action: "captureRequest",
-                  rect: clipRect,
-                  dpr: capDpr,
-                  filename: partNumber + ".png"
-                }, function(response) {
+                chrome.runtime.sendMessage({ action: "captureTab" }, function(response) {
                   clearTimeout(timeoutId);
                   if (!response || !response.success) {
                     reject(new Error(response ? response.error : "capture failed"));
-                  } else {
-                    resolve();
+                    return;
                   }
+                  var img = new Image();
+                  img.onload = function() {
+                    var cv = document.createElement("canvas");
+                    cv.width = sw / capDpr;
+                    cv.height = sh / capDpr;
+                    var ctx = cv.getContext("2d");
+                    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+                    resolve(cv.toDataURL("image/png", 0.95));
+                  };
+                  img.onerror = function() {
+                    reject(new Error("failed to decode screenshot"));
+                  };
+                  img.src = response.dataUrl;
                 });
               });
-              // 侧边栏已直接下载，返回特殊标记跳过后续下载
-              downloadUrl = "__captured__";
             } catch (captureErr) {
-              console.error("captureRequest failed:", captureErr);
+              console.error("captureTab failed:", captureErr);
               downloadUrl = null;
             }
           }
@@ -1114,12 +1073,6 @@ function injectImageCapture(partNumber) {
         if (!downloadUrl) {
           setStatus("捕获失败：无法渲染该元素", true);
           window.__img_capture_timer = setTimeout(cleanup, 2000);
-          return;
-        }
-        // 侧边栏已直接下载（captureRequest 流程），跳过后续下载
-        if (downloadUrl === "__captured__") {
-          setStatus("已保存 ✓", false);
-          window.__img_capture_timer = setTimeout(cleanup, 1500);
           return;
         }
         setStatus("正在保存...");
