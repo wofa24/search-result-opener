@@ -59,17 +59,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     );
     return true;
   }
-  else if (request.action === "captureTab") {
-    const windowId = sender.tab ? sender.tab.windowId : undefined;
-    chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
-      if (chrome.runtime.lastError) {
-        sendResponse({ success: false, error: chrome.runtime.lastError.message });
-      } else {
-        sendResponse({ success: true, dataUrl });
-      }
-    });
-    return true;
-  }
 });
 
 // 监听快捷键命令（多页提取模式，与 popup 点击确认打开逻辑一致）
