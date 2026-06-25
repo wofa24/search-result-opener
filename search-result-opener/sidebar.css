@@ -359,3 +359,15 @@ body {
   border-color: #c62828 !important;
   color: white !important;
 }
+
+/* PNG截图按钮 */
+.png-capture-btn {
+  color: #0078d4;
+  border-color: #b3d9ff;
+}
+
+.png-capture-btn:hover {
+  background: #0078d4 !important;
+  border-color: #0078d4 !important;
+  color: white !important;
+}

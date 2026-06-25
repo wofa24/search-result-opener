@@ -347,14 +347,17 @@ async function closeUnpinnedTabs() {
 // 启动元素捕捉模式：在活跃标签页中注入元素选择器（类似 Save to Notion）
 async function startImageCapture() {
   const btn = document.getElementById("captureBtn");
+  const btnLabel = btn.querySelector("span:last-child");
+  const origText = btnLabel.textContent;
+  btnLabel.textContent = "正在准备...";
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) { console.error("[截图捕获] 无法获取当前标签页"); return; }
 
     // 检查是否为受限页面（chrome://, chrome-extension:// 等无法注入脚本）
     if (tab.url && (tab.url.startsWith("chrome://") || tab.url.startsWith("edge://") || tab.url.startsWith("chrome-extension://") || tab.url.startsWith("about:") || tab.url.startsWith("edge-extension://"))) {
-      btn.querySelector("span:last-child").textContent = "此页面不支持";
-      setTimeout(() => { btn.querySelector("span:last-child").textContent = "保存截图"; }, 2000);
+      btnLabel.textContent = "此页面不支持";
+      setTimeout(() => { btnLabel.textContent = origText; }, 2000);
       return;
     }
 
@@ -391,15 +394,35 @@ async function startImageCapture() {
     partNumber = partNumber.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "");
 
     console.log("[截图捕获] 正在注入到标签页", tab.id, tab.url, "partNumber:", partNumber);
-    const injectResult = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: injectImageCapture,
-      args: [partNumber],
-    });
-    if (chrome.runtime.lastError) {
-      console.error("[截图捕获] 注入错误:", chrome.runtime.lastError.message);
-      throw new Error(chrome.runtime.lastError.message);
+    var injectResult = null;
+    var lastErr = null;
+    for (var attempt = 0; attempt < 8; attempt++) {
+      try {
+        injectResult = await Promise.race([
+          chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: injectImageCapture,
+            args: [partNumber],
+          }),
+          new Promise(function(_, reject) { setTimeout(function() { reject(new Error("注入超时")); }, 3000); })
+        ]);
+        if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message);
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        console.warn("[截图捕获] 注入第" + (attempt + 1) + "次失败:", e.message);
+        if (attempt < 7) {
+          btnLabel.textContent = "等待页面(" + (attempt + 2) + "/8)...";
+          await new Promise(function(r) { setTimeout(r, 800); });
+        }
+      }
     }
+    if (lastErr) {
+      console.error("[截图捕获] 注入8次均失败:", lastErr.message);
+      throw lastErr;
+    }
+    btnLabel.textContent = origText;
     console.log("[截图捕获] 注入完成, result:", injectResult);
     // 将焦点还给目标页面，使键盘事件（Esc）能到达注入的监听器
     try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
@@ -420,8 +443,8 @@ async function startImageCapture() {
   } catch (e) {
     console.error("startImageCapture error:", e);
     console.error("[截图捕获] startImageCapture error:", e);
-    btn.querySelector("span:last-child").textContent = "注入失败";
-    setTimeout(() => { btn.querySelector("span:last-child").textContent = "保存截图"; }, 2000);
+    btnLabel.textContent = "注入失败";
+    setTimeout(() => { btnLabel.textContent = origText; }, 2000);
   }
 }
 
@@ -434,6 +457,13 @@ async function startImageCapture() {
 // ============================================================
 function injectImageCapture(partNumber) {
   console.log("[截图捕获] 开始注入, partNumber:", partNumber);
+
+  function waitForDOM(cb) {
+    if (document.readyState !== "loading") { cb(); return; }
+    document.addEventListener("DOMContentLoaded", cb);
+  }
+
+  waitForDOM(function() {
   try {
     // --- 清理上一次残留 ---
     if (window.__img_capture_timer) { clearTimeout(window.__img_capture_timer); window.__img_capture_timer = null; }
@@ -534,7 +564,7 @@ function injectImageCapture(partNumber) {
         var el = all[i];
         if (!el || el === document.body || el === document.documentElement) continue;
         if (OUR_IDS[el.id]) continue;
-        if (/^(IMG|VIDEO|CANVAS)$/i.test(el.tagName)) {
+        if (/^(IMG|VIDEO|CANVAS|SVG)$/i.test(el.tagName)) {
           var rr = el.getBoundingClientRect();
           var minW = el.tagName === 'CANVAS' ? 10 : 20;
           var minH = el.tagName === 'CANVAS' ? 10 : 20;
@@ -915,6 +945,43 @@ function injectImageCapture(partNumber) {
           cv2.width = vw; cv2.height = vh;
           cv2.getContext("2d").drawImage(el, 0, 0, vw, vh);
           downloadUrl = cv2.toDataURL("image/png", 0.95);
+        } else if (tag === "SVG") {
+          setStatus("正在捕获SVG...");
+          try {
+            var svgClone = el.cloneNode(true);
+            var svgW = r.width, svgH = r.height;
+            svgClone.setAttribute("width", svgW);
+            svgClone.setAttribute("height", svgH);
+            var svgData = new XMLSerializer().serializeToString(svgClone);
+            var svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+            var svgUrl = URL.createObjectURL(svgBlob);
+            downloadUrl = await new Promise(function(resolve, reject) {
+              var resolved = false;
+              var tid = setTimeout(function() {
+                if (!resolved) { resolved = true; URL.revokeObjectURL(svgUrl); reject(new Error("SVG render timeout")); }
+              }, 5000);
+              var tmpImg = new Image();
+              tmpImg.onload = function() {
+                if (resolved) return;
+                resolved = true; clearTimeout(tid); URL.revokeObjectURL(svgUrl);
+                var cv = document.createElement("canvas");
+                cv.width = svgW; cv.height = svgH;
+                cv.getContext("2d").drawImage(tmpImg, 0, 0, svgW, svgH);
+                resolve(cv.toDataURL("image/png", 0.95));
+              };
+              tmpImg.onerror = function() {
+                if (resolved) return;
+                resolved = true; clearTimeout(tid); URL.revokeObjectURL(svgUrl);
+                reject(new Error("SVG render failed"));
+              };
+              tmpImg.src = svgUrl;
+            });
+          } catch (svgErr) {
+            downloadUrl = null;
+          }
+          if (!downloadUrl) {
+            setStatus("SVG渲染失败，尝试截屏...", false);
+          }
         } else {
           // 非媒体元素：先尝试 CSS background-image，失败后用 captureVisibleTab
           var bgImage = getComputedStyle(el).backgroundImage;
@@ -969,14 +1036,33 @@ function injectImageCapture(partNumber) {
               };
               if (clipRect.width <= 0 || clipRect.height <= 0) throw new Error("元素在可视区域外");
 
-              // 1. 呼叫后台 Service Worker 索要当前屏幕的高清原图
-              var fullScreenDataUrl = await new Promise(function(resolve, reject) {
-                chrome.runtime.sendMessage({ action: "captureViewport" }, function(res) {
-                  if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-                  else if (!res || !res.success) reject(new Error(res ? res.error : "截屏API无响应"));
-                  else resolve(res.dataUrl);
+              // 1. 隐藏UI元素，避免被截入截图
+              var savedOverlayDisplay = overlay.style.display;
+              var savedLabelDisplay = labelEl.style.display;
+              var savedBannerDisplay = banner.style.display;
+              overlay.style.display = "none";
+              labelEl.style.display = "none";
+              banner.style.display = "none";
+
+              // 等待浏览器重绘，确保UI已从屏幕消失
+              await new Promise(function(r) { requestAnimationFrame(function() { requestAnimationFrame(r); }); });
+
+              // 2. 呼叫后台 Service Worker 索要当前屏幕的高清原图
+              var fullScreenDataUrl;
+              try {
+                fullScreenDataUrl = await new Promise(function(resolve, reject) {
+                  chrome.runtime.sendMessage({ action: "captureViewport" }, function(res) {
+                    if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                    else if (!res || !res.success) reject(new Error(res ? res.error : "截屏API无响应"));
+                    else resolve(res.dataUrl);
+                  });
                 });
-              });
+              } finally {
+                // 3. 恢复UI元素
+                overlay.style.display = savedOverlayDisplay;
+                labelEl.style.display = savedLabelDisplay;
+                banner.style.display = savedBannerDisplay;
+              }
 
               // 2. 本地裁剪出鼠标指向的元素
               downloadUrl = await new Promise(function(resolve, reject) {
@@ -1141,9 +1227,587 @@ function injectImageCapture(partNumber) {
     console.error("[截图捕获] 注入失败:", err.message, err.stack);
     try { cleanup(); } catch (e2) {}
   }
+  }); // waitForDOM
 }
 
 // 定期刷新
 setInterval(() => {
   loadTabGroup();
 }, 3000);
+
+// ============================================================
+// PNG截图编辑器（独立功能，与现有“保存截图”无关）
+// 流程：侧边栏按钮 → 注入框选脚本 → 区域框选 → 截图裁剪
+//       → 页面蒙版编辑器（检测线条/擦除/撤销/保存）
+// ============================================================
+
+document.getElementById("pngCaptureBtn").addEventListener("click", startPngCapture);
+
+async function startPngCapture() {
+  var btn = document.getElementById("pngCaptureBtn");
+  try {
+    var [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) return;
+    if (tab.url && (tab.url.startsWith("chrome://") || tab.url.startsWith("edge://") || tab.url.startsWith("chrome-extension://") || tab.url.startsWith("about:"))) {
+      btn.querySelector("span:last-child").textContent = "此页面不支持";
+      setTimeout(function() { btn.querySelector("span:last-child").textContent = "PNG截图"; }, 2000);
+      return;
+    }
+    var data = await chrome.storage.local.get("currentGroup");
+    var partNumber = "png_capture";
+    if (data.currentGroup && data.currentGroup.tabIds && data.currentGroup.tabIds.includes(tab.id)) {
+      partNumber = data.currentGroup.partNumber || "png_capture";
+    }
+    partNumber = partNumber.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "");
+
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: injectPngCaptureEditor,
+      args: [partNumber]
+    });
+    try { await chrome.tabs.update(tab.id, { active: true }); } catch(e) {}
+  } catch(e) {
+    console.error("startPngCapture error:", e);
+    btn.querySelector("span:last-child").textContent = "注入失败";
+    setTimeout(function() { btn.querySelector("span:last-child").textContent = "PNG截图"; }, 2000);
+  }
+}
+
+function injectPngCaptureEditor(partNumber) {
+  if (window.__png_editor_active) return;
+  window.__png_editor_active = true;
+  window.__png_editor_gen = (window.__png_editor_gen || 0) + 1;
+  var gen = window.__png_editor_gen;
+
+  var style = document.createElement("style");
+  style.id = "__png_style";
+  style.textContent =
+    "#__png_sel_overlay{position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483646;background:rgba(0,0,0,0.3);cursor:crosshair;}" +
+    "#__png_sel_rect{position:fixed;border:2px solid #0078d4;background:rgba(0,120,212,0.1);z-index:2147483647;display:none;pointer-events:none;}" +
+    "#__png_sel_banner{position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 16px;text-align:center;pointer-events:none;background:linear-gradient(135deg,#0078d4,#005a9e);color:#fff;font-size:13px;font-family:system-ui,'Microsoft YaHei',sans-serif;box-shadow:0 2px 12px rgba(0,0,0,0.25);}" +
+    "#__png_sel_banner kbd{display:inline-block;padding:1px 6px;margin:0 2px;background:rgba(255,255,255,0.2);border-radius:3px;font-size:12px;font-family:monospace;border:1px solid rgba(255,255,255,0.3);}" +
+    "#__png_ed_overlay{position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483646;background:rgba(0,0,0,0.5);display:flex;flex-direction:column;align-items:center;font-family:system-ui,'Microsoft YaHei',sans-serif;}" +
+    "#__png_ed_toolbar{display:flex;gap:8px;padding:10px 16px;background:#f8f9fa;border-bottom:1px solid #e0e0e0;width:100%;box-sizing:border-box;flex-wrap:wrap;align-items:center;}" +
+    "#__png_ed_toolbar .png-btn{padding:6px 14px;background:#fff;border:1px solid #ddd;color:#666;font-size:12px;border-radius:6px;cursor:pointer;transition:all 0.2s;white-space:nowrap;font-family:inherit;}" +
+    "#__png_ed_toolbar .png-btn:hover:not(:disabled){background:#0078d4;border-color:#0078d4;color:#fff;transform:translateY(-1px);box-shadow:0 2px 6px rgba(0,120,212,0.2);}" +
+    "#__png_ed_toolbar .png-btn:disabled{opacity:0.4;cursor:not-allowed;}" +
+    "#__png_ed_toolbar .png-title{color:#0078d4;font-size:14px;font-weight:600;margin-right:auto;}" +
+    "#__png_ed_canvas_wrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:auto;padding:20px;background:#e8e8e8;}" +
+    "#__png_ed_inner{position:relative;display:inline-block;line-height:0;}" +
+    "#__png_ed_inner canvas{display:block;}" +
+    "#__png_ed_canvas{box-shadow:0 4px 24px rgba(0,0,0,0.3);cursor:crosshair;}" +
+    "#__png_ed_overlay_cv{position:absolute;top:0;left:0;pointer-events:none;}" +
+    "#__png_ed_status{padding:6px 16px;background:#f8f9fa;border-top:1px solid #e0e0e0;width:100%;box-sizing:border-box;font-size:11px;color:#666;text-align:center;}" +
+    "#__png_ed_help{padding:6px 16px;background:#f0f4f8;width:100%;box-sizing:border-box;display:flex;gap:16px;justify-content:center;flex-wrap:wrap;}" +
+    "#__png_ed_help span{font-size:11px;color:#888;white-space:nowrap;}";
+  document.head.appendChild(style);
+
+  // ========== Phase 1: 区域框选 ==========
+  var selOverlay = document.createElement("div");
+  selOverlay.id = "__png_sel_overlay";
+  var selRect = document.createElement("div");
+  selRect.id = "__png_sel_rect";
+  var selBanner = document.createElement("div");
+  selBanner.id = "__png_sel_banner";
+  selBanner.innerHTML = '✂️ <b>PNG截图模式</b> — 拖拽框选截图区域 &nbsp;|&nbsp; <kbd>Esc</kbd> 退出';
+  document.body.appendChild(selOverlay);
+  document.body.appendChild(selRect);
+  document.body.appendChild(selBanner);
+
+  var startX = 0, startY = 0, dragging = false;
+
+  function selMouseDown(e) {
+    if (gen !== window.__png_editor_gen) return;
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    selRect.style.left = startX + "px";
+    selRect.style.top = startY + "px";
+    selRect.style.width = "0";
+    selRect.style.height = "0";
+    selRect.style.display = "block";
+  }
+
+  function selMouseMove(e) {
+    if (!dragging || gen !== window.__png_editor_gen) return;
+    var x = Math.min(startX, e.clientX);
+    var y = Math.min(startY, e.clientY);
+    var w = Math.abs(e.clientX - startX);
+    var h = Math.abs(e.clientY - startY);
+    selRect.style.left = x + "px";
+    selRect.style.top = y + "px";
+    selRect.style.width = w + "px";
+    selRect.style.height = h + "px";
+  }
+
+  function selMouseUp(e) {
+    if (!dragging || gen !== window.__png_editor_gen) return;
+    dragging = false;
+    var x = Math.min(startX, e.clientX);
+    var y = Math.min(startY, e.clientY);
+    var w = Math.abs(e.clientX - startX);
+    var h = Math.abs(e.clientY - startY);
+    if (w < 10 || h < 10) return;
+    cleanupSelection();
+    captureAndEdit(x, y, w, h);
+  }
+
+  function selKeyDown(e) {
+    if (gen !== window.__png_editor_gen) return;
+    if (e.key === "Escape") { e.preventDefault(); cleanupAll(); }
+  }
+
+  function cleanupSelection() {
+    selOverlay.removeEventListener("mousedown", selMouseDown);
+    window.removeEventListener("mousemove", selMouseMove);
+    window.removeEventListener("mouseup", selMouseUp);
+    window.removeEventListener("keydown", selKeyDown);
+    try { selOverlay.remove(); } catch(e) {}
+    try { selRect.remove(); } catch(e) {}
+    try { selBanner.remove(); } catch(e) {}
+  }
+
+  function cleanupAll() {
+    cleanupSelection();
+    cleanupEditor();
+    try { style.remove(); } catch(e) {}
+    window.__png_editor_active = false;
+  }
+
+  selOverlay.addEventListener("mousedown", selMouseDown);
+  window.addEventListener("mousemove", selMouseMove);
+  window.addEventListener("mouseup", selMouseUp);
+  window.addEventListener("keydown", selKeyDown);
+
+  // ========== 截图裁剪 ==========
+  async function captureAndEdit(rx, ry, rw, rh) {
+    var dpr = window.devicePixelRatio || 1;
+
+    // 先隐藏所有选区UI，避免被截入截图
+    try { selOverlay.style.display = "none"; } catch(e) {}
+    try { selRect.style.display = "none"; } catch(e) {}
+    try { selBanner.style.display = "none"; } catch(e) {}
+
+    // 等待浏览器重绘，确保UI已从屏幕消失
+    await new Promise(function(r) { requestAnimationFrame(function() { requestAnimationFrame(r); }); });
+
+    chrome.runtime.sendMessage({ action: "captureViewport" }, function(res) {
+      if (gen !== window.__png_editor_gen) return;
+      cleanupSelection();
+      if (!res || !res.success) {
+        alert("截图失败: " + (res ? res.error : "无响应"));
+        cleanupAll();
+        return;
+      }
+      var img = new Image();
+      img.onload = function() {
+        var cx = Math.round(rx * dpr);
+        var cy = Math.round(ry * dpr);
+        var cw = Math.round(rw * dpr);
+        var ch = Math.round(rh * dpr);
+        cx = Math.max(0, Math.min(cx, img.width));
+        cy = Math.max(0, Math.min(cy, img.height));
+        cw = Math.min(cw, img.width - cx);
+        ch = Math.min(ch, img.height - cy);
+        if (cw < 10 || ch < 10) { alert("选区太小"); cleanupAll(); return; }
+        var cv = document.createElement("canvas");
+        cv.width = cw; cv.height = ch;
+        cv.getContext("2d").drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
+        var dataUrl = cv.toDataURL("image/png");
+        showEditor(dataUrl, cw, ch);
+      };
+      img.src = res.dataUrl;
+    });
+  }
+
+  // ========== Phase 2: 编辑器蒙版 ==========
+  var edOverlay, edCanvas, edCtx, edOverlayCv, edOverlayCtx;
+  var detectedLines = [], linesDetected = false, undoStack = [], clickTimer = null;
+  var MAX_UNDO = 30, origW = 0, origH = 0;
+
+  function showEditor(dataUrl, w, h) {
+    origW = w; origH = h;
+    edOverlay = document.createElement("div");
+    edOverlay.id = "__png_ed_overlay";
+
+    var toolbar = document.createElement("div");
+    toolbar.id = "__png_ed_toolbar";
+    toolbar.innerHTML =
+      '<span class="png-title">✏️ 截图编辑器</span>' +
+      '<button class="png-btn" id="__png_detect">🔍 检测线条</button>' +
+      '<button class="png-btn" id="__png_undo" disabled>↩️ 撤销</button>' +
+      '<button class="png-btn" id="__png_save">💾 保存</button>' +
+      '<button class="png-btn" id="__png_exit" style="color:#c62828;">✕ 退出</button>';
+
+    var canvasWrap = document.createElement("div");
+    canvasWrap.id = "__png_ed_canvas_wrap";
+
+    var innerWrap = document.createElement("div");
+    innerWrap.id = "__png_ed_inner";
+
+    edCanvas = document.createElement("canvas");
+    edCanvas.id = "__png_ed_canvas";
+    edOverlayCv = document.createElement("canvas");
+    edOverlayCv.id = "__png_ed_overlay_cv";
+
+    var img = new Image();
+    img.onload = function() {
+      var maxW = window.innerWidth * 0.88;
+      var maxH = window.innerHeight * 0.68;
+      var scale = Math.min(1, maxW / img.width, maxH / img.height);
+      var dispW = Math.round(img.width * scale);
+      var dispH = Math.round(img.height * scale);
+      edCanvas.width = img.width;
+      edCanvas.height = img.height;
+      edCanvas.style.width = dispW + "px";
+      edCanvas.style.height = dispH + "px";
+      edOverlayCv.width = img.width;
+      edOverlayCv.height = img.height;
+      edOverlayCv.style.width = dispW + "px";
+      edOverlayCv.style.height = dispH + "px";
+      edCtx = edCanvas.getContext("2d");
+      edOverlayCtx = edOverlayCv.getContext("2d");
+      edCtx.drawImage(img, 0, 0);
+      innerWrap.appendChild(edCanvas);
+      innerWrap.appendChild(edOverlayCv);
+    };
+    img.src = dataUrl;
+
+    canvasWrap.appendChild(innerWrap);
+
+    var status = document.createElement("div");
+    status.id = "__png_ed_status";
+    status.textContent = "就绪 — 点击“检测线条”开始";
+
+    var help = document.createElement("div");
+    help.id = "__png_ed_help";
+    help.innerHTML = '<span>🖱️ 单击线条：擦除到交叉点</span><span>🖱️🖱️ 双击线条：擦除整条线</span><span>↩️ Ctrl+Z：撤销</span>';
+
+    edOverlay.appendChild(toolbar);
+    edOverlay.appendChild(help);
+    edOverlay.appendChild(status);
+    edOverlay.appendChild(canvasWrap);
+    document.body.appendChild(edOverlay);
+
+    setupEditorEvents();
+  }
+
+  function edStatus(text) {
+    var el = document.getElementById("__png_ed_status");
+    if (el) el.textContent = text;
+  }
+
+  function pushUndo() {
+    undoStack.push(edCanvas.toDataURL("image/png"));
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    var btn = document.getElementById("__png_undo");
+    if (btn) btn.disabled = false;
+  }
+
+  function setupEditorEvents() {
+    document.getElementById("__png_detect").addEventListener("click", function() {
+      edStatus("正在检测线条...");
+      setTimeout(function() {
+        var imageData = edCtx.getImageData(0, 0, edCanvas.width, edCanvas.height);
+        detectedLines = detectLinesFromImage(imageData);
+        linesDetected = true;
+        drawDetectedLines();
+        edStatus("检测到 " + detectedLines.length + " 条线段 — 单击/双击线条擦除");
+      }, 50);
+    });
+
+    document.getElementById("__png_undo").addEventListener("click", doUndo);
+
+    document.getElementById("__png_save").addEventListener("click", function() {
+      var dataUrl = edCanvas.toDataURL("image/png");
+      chrome.runtime.sendMessage({ action: "downloadImage", url: dataUrl, filename: partNumber + "_edited.png" }, function(res) {
+        if (res && res.success) edStatus("已保存 ✓");
+        else edStatus("保存失败");
+      });
+    });
+
+    document.getElementById("__png_exit").addEventListener("click", cleanupAll);
+
+    edCanvas.addEventListener("click", function(e) {
+      if (!linesDetected || detectedLines.length === 0) return;
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; }
+      var pos = canvasCoords(e);
+      var line = findNearestLine(pos.x, pos.y);
+      if (!line) return;
+      var cl = line, cx = pos.x, cy = pos.y;
+      clickTimer = setTimeout(function() {
+        clickTimer = null;
+        eraseLineToIntersections(cl, cx, cy);
+      }, 280);
+    });
+
+    edCanvas.addEventListener("dblclick", function(e) {
+      if (!linesDetected || detectedLines.length === 0) return;
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      var pos = canvasCoords(e);
+      var line = findNearestLine(pos.x, pos.y);
+      if (!line) return;
+      eraseFullLine(line);
+    });
+
+    edCanvas.addEventListener("mousemove", function(e) {
+      if (!linesDetected || detectedLines.length === 0) return;
+      var pos = canvasCoords(e);
+      var line = findNearestLine(pos.x, pos.y);
+      drawDetectedLines();
+      if (line) {
+        edOverlayCtx.strokeStyle = "rgba(255,50,50,0.8)";
+        edOverlayCtx.lineWidth = 3;
+        edOverlayCtx.setLineDash([]);
+        edOverlayCtx.beginPath();
+        edOverlayCtx.moveTo(line.x1, line.y1);
+        edOverlayCtx.lineTo(line.x2, line.y2);
+        edOverlayCtx.stroke();
+        edCanvas.style.cursor = "pointer";
+      } else {
+        edCanvas.style.cursor = "crosshair";
+      }
+    });
+
+    document.addEventListener("keydown", editorKeyHandler);
+  }
+
+  function editorKeyHandler(e) {
+    if (gen !== window.__png_editor_gen) return;
+    if (!edOverlay || edOverlay.style.display === "none") return;
+    if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); doUndo(); }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (linesDetected) {
+        linesDetected = false;
+        detectedLines = [];
+        edOverlayCtx.clearRect(0, 0, edOverlayCv.width, edOverlayCv.height);
+        edCanvas.style.cursor = "crosshair";
+        edStatus("已退出线条模式 — 再按 Esc 退出编辑器");
+      } else {
+        cleanupAll();
+      }
+    }
+  }
+
+  function doUndo() {
+    if (undoStack.length === 0) return;
+    var dataUrl = undoStack.pop();
+    var img = new Image();
+    img.onload = function() {
+      edCtx.clearRect(0, 0, edCanvas.width, edCanvas.height);
+      edCtx.drawImage(img, 0, 0);
+      linesDetected = false;
+      detectedLines = [];
+      edOverlayCtx.clearRect(0, 0, edOverlayCv.width, edOverlayCv.height);
+      edStatus("已撤销 — 重新检测线条");
+      if (undoStack.length === 0) {
+        var btn = document.getElementById("__png_undo");
+        if (btn) btn.disabled = true;
+      }
+    };
+    img.src = dataUrl;
+  }
+
+  function canvasCoords(e) {
+    var rect = edCanvas.getBoundingClientRect();
+    var scaleX = edCanvas.width / rect.width;
+    var scaleY = edCanvas.height / rect.height;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  }
+
+  function cleanupEditor() {
+    document.removeEventListener("keydown", editorKeyHandler);
+    try { edOverlay.remove(); } catch(e) {}
+    edOverlay = null;
+  }
+
+  // ===== 线段检测（Sobel + Hough） =====
+  function detectLinesFromImage(imageData) {
+    var w = imageData.width, h = imageData.height, data = imageData.data;
+    var gray = new Uint8Array(w * h);
+    for (var i = 0; i < w * h; i++)
+      gray[i] = Math.round(data[i*4]*0.299 + data[i*4+1]*0.587 + data[i*4+2]*0.114);
+
+    var edges = new Uint8Array(w * h);
+    var thresh = 30;
+    for (var y = 1; y < h-1; y++) {
+      for (var x = 1; x < w-1; x++) {
+        var idx = y*w+x;
+        var gx = -gray[idx-w-1]+gray[idx-w+1]-2*gray[idx-1]+2*gray[idx+1]-gray[idx+w-1]+gray[idx+w+1];
+        var gy = -gray[idx-w-1]-2*gray[idx-w]-gray[idx-w+1]+gray[idx+w-1]+2*gray[idx+w]+gray[idx+w+1];
+        edges[idx] = Math.sqrt(gx*gx+gy*gy) > thresh ? 1 : 0;
+      }
+    }
+
+    var angleBins = 180;
+    var rhoMax = Math.ceil(Math.sqrt(w*w+h*h));
+    var accum = new Int32Array(angleBins * (2*rhoMax+1));
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        if (!edges[y*w+x]) continue;
+        for (var a = 0; a < angleBins; a++) {
+          var theta = a * Math.PI / angleBins;
+          var rho = Math.round(x*Math.cos(theta)+y*Math.sin(theta));
+          accum[a*(2*rhoMax+1)+(rho+rhoMax)]++;
+        }
+      }
+    }
+
+    var voteThresh = Math.max(30, Math.min(w,h)*0.15);
+    var raw = [];
+    for (var a = 0; a < angleBins; a++) {
+      for (var r = -rhoMax; r <= rhoMax; r++) {
+        var v = accum[a*(2*rhoMax+1)+(r+rhoMax)];
+        if (v < voteThresh) continue;
+        var isMax = true;
+        for (var da = -2; da <= 2 && isMax; da++) {
+          for (var dr = -2; dr <= 2 && isMax; dr++) {
+            if (da===0 && dr===0) continue;
+            var na = ((a+da)%angleBins+angleBins)%angleBins;
+            var nr = r+dr;
+            if (nr < -rhoMax || nr > rhoMax) continue;
+            if (accum[na*(2*rhoMax+1)+(nr+rhoMax)] > v) isMax = false;
+          }
+        }
+        if (isMax) raw.push({theta:a*Math.PI/angleBins, rho:r, votes:v});
+      }
+    }
+
+    raw.sort(function(a,b){return b.votes-a.votes;});
+    var filtered = [];
+    for (var i = 0; i < raw.length && filtered.length < 80; i++) {
+      var l = raw[i]; var tooClose = false;
+      for (var j = 0; j < filtered.length; j++) {
+        var ad = Math.abs(l.theta-filtered[j].theta);
+        if (ad > Math.PI/2) ad = Math.PI-ad;
+        if (ad < 0.1 && Math.abs(l.rho-filtered[j].rho) < 10) { tooClose = true; break; }
+      }
+      if (!tooClose) filtered.push(l);
+    }
+
+    var result = [];
+    for (var i = 0; i < filtered.length; i++) {
+      var pts = getLineEndpoints(filtered[i], w, h);
+      if (pts) result.push({theta:filtered[i].theta, rho:filtered[i].rho, x1:pts.x1, y1:pts.y1, x2:pts.x2, y2:pts.y2, votes:filtered[i].votes});
+    }
+    return result;
+  }
+
+  function getLineEndpoints(line, w, h) {
+    var cosT = Math.cos(line.theta), sinT = Math.sin(line.theta);
+    var pts = [];
+    if (Math.abs(sinT) > 0.001) {
+      var y0 = (line.rho)/sinT; if (y0>=0&&y0<=h) pts.push({x:0,y:y0});
+      var y1 = (line.rho-w*cosT)/sinT; if (y1>=0&&y1<=h) pts.push({x:w,y:y1});
+    }
+    if (Math.abs(cosT) > 0.001) {
+      var x0 = (line.rho)/cosT; if (x0>=0&&x0<=w) pts.push({x:x0,y:0});
+      var x1 = (line.rho-h*sinT)/cosT; if (x1>=0&&x1<=w) pts.push({x:x1,y:h});
+    }
+    if (pts.length < 2) return null;
+    return {x1:pts[0].x, y1:pts[0].y, x2:pts[1].x, y2:pts[1].y};
+  }
+
+  function drawDetectedLines() {
+    edOverlayCtx.clearRect(0, 0, edOverlayCv.width, edOverlayCv.height);
+    edOverlayCtx.strokeStyle = "rgba(0,120,212,0.5)";
+    edOverlayCtx.lineWidth = 2;
+    edOverlayCtx.setLineDash([6,4]);
+    for (var i = 0; i < detectedLines.length; i++) {
+      var l = detectedLines[i];
+      edOverlayCtx.beginPath();
+      edOverlayCtx.moveTo(l.x1, l.y1);
+      edOverlayCtx.lineTo(l.x2, l.y2);
+      edOverlayCtx.stroke();
+    }
+    edOverlayCtx.setLineDash([]);
+  }
+
+  // ===== 线段查找与擦除 =====
+  function ptLineDist(px,py,x1,y1,x2,y2) {
+    var dx=x2-x1, dy=y2-y1, lenSq=dx*dx+dy*dy;
+    if (lenSq<0.001) return Math.sqrt((px-x1)*(px-x1)+(py-y1)*(py-y1));
+    var t=Math.max(0,Math.min(1,((px-x1)*dx+(py-y1)*dy)/lenSq));
+    return Math.sqrt((px-(x1+t*dx))*(px-(x1+t*dx))+(py-(y1+t*dy))*(py-(y1+t*dy)));
+  }
+
+  function findNearestLine(mx,my) {
+    var best=null, bd=Infinity;
+    for (var i=0;i<detectedLines.length;i++) {
+      var d=ptLineDist(mx,my,detectedLines[i].x1,detectedLines[i].y1,detectedLines[i].x2,detectedLines[i].y2);
+      if (d<bd) {bd=d; best=detectedLines[i];}
+    }
+    return bd<15 ? best : null;
+  }
+
+  function lineIntersect(l1,l2) {
+    var d=(l1.x1-l1.x2)*(l2.y1-l2.y2)-(l1.y1-l1.y2)*(l2.x1-l2.x2);
+    if (Math.abs(d)<0.001) return null;
+    var t=((l1.x1-l2.x1)*(l2.y1-l2.y2)-(l1.y1-l2.y1)*(l2.x1-l2.x2))/d;
+    var ix=l1.x1+t*(l1.x2-l1.x1), iy=l1.y1+t*(l1.y2-l1.y1);
+    if (t<0||t>1) return null;
+    return {x:ix, y:iy, t:t};
+  }
+
+  function findIntersections(line) {
+    var pts=[];
+    for (var i=0;i<detectedLines.length;i++) {
+      if (detectedLines[i]===line) continue;
+      var ip=lineIntersect(line,detectedLines[i]);
+      if (ip) pts.push(ip);
+    }
+    pts.sort(function(a,b){return a.t-b.t;});
+    return pts;
+  }
+
+  function eraseSeg(x1,y1,x2,y2) {
+    var dx=x2-x1, dy=y2-y1, len=Math.sqrt(dx*dx+dy*dy);
+    if (len<0.5) return;
+    var steps = Math.max(Math.ceil(len), 1);
+    var brushR = 4;
+    edCtx.save();
+    edCtx.globalCompositeOperation = "destination-out";
+    edCtx.fillStyle = "rgba(0,0,0,1)";
+    for (var i = 0; i <= steps; i++) {
+      var t = i / steps;
+      var px = x1 + t * dx;
+      var py = y1 + t * dy;
+      edCtx.beginPath();
+      edCtx.arc(px, py, brushR, 0, Math.PI * 2);
+      edCtx.fill();
+    }
+    edCtx.restore();
+    edCtx.save();
+    edCtx.globalCompositeOperation = "destination-over";
+    edCtx.fillStyle = "#ffffff";
+    edCtx.fillRect(0, 0, edCanvas.width, edCanvas.height);
+    edCtx.restore();
+  }
+
+  function eraseLineToIntersections(line, cx, cy) {
+    var ints = findIntersections(line);
+    var dx=line.x2-line.x1, dy=line.y2-line.y1, lenSq=dx*dx+dy*dy;
+    var clickT = lenSq>0 ? ((cx-line.x1)*dx+(cy-line.y1)*dy)/lenSq : 0;
+    var left = {x:line.x1, y:line.y1, t:0};
+    for (var i=0;i<ints.length;i++) { if (ints[i].t<=clickT) left=ints[i]; else break; }
+    var right = {x:line.x2, y:line.y2, t:1};
+    for (var i=ints.length-1;i>=0;i--) { if (ints[i].t>=clickT) right=ints[i]; else break; }
+    pushUndo();
+    eraseSeg(left.x, left.y, right.x, right.y);
+    var idx = detectedLines.indexOf(line);
+    if (idx!==-1) detectedLines.splice(idx,1);
+    drawDetectedLines();
+    edStatus("已擦除线段到交叉点");
+  }
+
+  function eraseFullLine(line) {
+    pushUndo();
+    eraseSeg(line.x1, line.y1, line.x2, line.y2);
+    var idx = detectedLines.indexOf(line);
+    if (idx!==-1) detectedLines.splice(idx,1);
+    drawDetectedLines();
+    edStatus("已擦除整条线");
+  }
+}
